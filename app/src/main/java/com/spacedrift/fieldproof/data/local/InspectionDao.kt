@@ -15,6 +15,15 @@ interface InspectionDao {
     @Query("SELECT * FROM inspections ORDER BY updatedAt DESC")
     fun observeInspections(): Flow<List<InspectionEntity>>
 
+    @Query(
+        "SELECT i.*, " +
+            "(SELECT COUNT(*) FROM checklist_items c WHERE c.inspectionId = i.id) AS totalItems, " +
+            "(SELECT COUNT(*) FROM checklist_items c WHERE c.inspectionId = i.id AND c.completed = 1) AS completedItems, " +
+            "(SELECT COUNT(*) FROM evidence e WHERE e.inspectionId = i.id) AS evidenceCount " +
+            "FROM inspections i ORDER BY i.updatedAt DESC"
+    )
+    fun observeInspectionSummaries(): Flow<List<InspectionSummaryEntity>>
+
     @Query("SELECT * FROM inspections WHERE id = :inspectionId LIMIT 1")
     suspend fun getInspection(
         inspectionId: String

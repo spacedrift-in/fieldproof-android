@@ -3,6 +3,8 @@ package com.spacedrift.fieldproof.di
 import com.spacedrift.fieldproof.data.remote.ContentResolverEvidenceFileReader
 import com.spacedrift.fieldproof.data.remote.EvidenceFileReader
 import com.spacedrift.fieldproof.data.remote.EvidenceUploader
+import com.spacedrift.fieldproof.data.remote.InspectionUploader
+import com.spacedrift.fieldproof.data.remote.InspectionWorkflowClient
 import com.spacedrift.fieldproof.data.repository.RemoteRepository
 import dagger.Binds
 import dagger.Module
@@ -19,6 +21,18 @@ abstract class RepositoryModule {
     abstract fun bindEvidenceUploader(
         remoteRepository: RemoteRepository
     ): EvidenceUploader
+
+    @Binds
+    @Singleton
+    abstract fun bindInspectionUploader(
+        remoteRepository: RemoteRepository
+    ): InspectionUploader
+
+    @Binds
+    @Singleton
+    abstract fun bindInspectionWorkflowClient(
+        remoteRepository: RemoteRepository
+    ): InspectionWorkflowClient
 
     @Binds
     @Singleton

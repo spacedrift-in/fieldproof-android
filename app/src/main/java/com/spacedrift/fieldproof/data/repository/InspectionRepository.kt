@@ -6,6 +6,7 @@ import com.spacedrift.fieldproof.data.local.EvidenceDao
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionDao
 import com.spacedrift.fieldproof.data.local.InspectionEntity
+import com.spacedrift.fieldproof.data.local.InspectionSummaryEntity
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 import javax.inject.Inject
@@ -19,6 +20,10 @@ class InspectionRepository @Inject constructor(
 
     fun observeInspections(): Flow<List<InspectionEntity>> {
         return inspectionDao.observeInspections()
+    }
+
+    fun observeInspectionSummaries(): Flow<List<InspectionSummaryEntity>> {
+        return inspectionDao.observeInspectionSummaries()
     }
 
     suspend fun getInspection(
@@ -46,6 +51,10 @@ class InspectionRepository @Inject constructor(
         inspectionDao.insertInspection(inspection)
 
         createDefaultChecklist(inspection.id)
+
+        // 3. Create a durable sync operation so the inspection exists
+        //    server-side before any of its evidence is uploaded.
+        syncRepository.queueInspection(inspection.id)
 
         return inspection
     }
@@ -110,33 +119,57 @@ class InspectionRepository @Inject constructor(
     private suspend fun createDefaultChecklist(
         inspectionId: String
     ) {
-        val items = listOf(
+        val items = DEMO_TEMPLATE_ITEMS.map { templateItem ->
             ChecklistItemEntity(
-                id = UUID.randomUUID().toString(),
+                id = checklistItemId(
+                    inspectionId = inspectionId,
+                    templateItemId = templateItem.templateId
+                ),
                 inspectionId = inspectionId,
-                title = "Equipment condition",
+                title = templateItem.title,
+                required = templateItem.required
+            )
+        }
+
+        checklistItemDao.insertChecklistItems(items)
+    }
+
+    private data class TemplateItem(
+        val templateId: String,
+        val title: String,
+        val required: Boolean
+    )
+
+    // Mirrors the backend demo template (see backend/app/demo_data.py) so local
+    // checklist item ids line up with the server-seeded items. The ids are derived
+    // deterministically from (inspectionId, template_item_id) so offline-created
+    // inspections reference the same items the server creates on sync.
+    private companion object {
+        val DEMO_TEMPLATE_ITEMS = listOf(
+            TemplateItem(
+                templateId = "41adf50d-2c24-4e13-9b7e-2dfae32bfe01",
+                title = "Emergency exit is unobstructed",
                 required = true
             ),
-            ChecklistItemEntity(
-                id = UUID.randomUUID().toString(),
-                inspectionId = inspectionId,
-                title = "Safety signage",
+            TemplateItem(
+                templateId = "41adf50d-2c24-4e13-9b7e-2dfae32bfe02",
+                title = "Fire extinguisher is accessible",
                 required = true
             ),
-            ChecklistItemEntity(
-                id = UUID.randomUUID().toString(),
-                inspectionId = inspectionId,
-                title = "Access and clearance",
-                required = true
-            ),
-            ChecklistItemEntity(
-                id = UUID.randomUUID().toString(),
-                inspectionId = inspectionId,
-                title = "Documentation",
+            TemplateItem(
+                templateId = "41adf50d-2c24-4e13-9b7e-2dfae32bfe03",
+                title = "General observations",
                 required = false
             )
         )
 
-        checklistItemDao.insertChecklistItems(items)
+        fun checklistItemId(
+            inspectionId: String,
+            templateItemId: String
+        ): String {
+            return UUID.nameUUIDFromBytes(
+                "$inspectionId:$templateItemId".toByteArray(Charsets.UTF_8)
+            ).toString()
+        }
     }
 }

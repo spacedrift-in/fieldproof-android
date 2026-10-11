@@ -6,16 +6,25 @@ import com.spacedrift.fieldproof.evidenceEntity
 import com.spacedrift.fieldproof.httpException
 import com.spacedrift.fieldproof.readPartValues
 import com.spacedrift.fieldproof.data.remote.EvidenceUploadResult
+import com.spacedrift.fieldproof.data.remote.RemoteInspection
+import com.spacedrift.fieldproof.data.remote.WorkflowResult
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RemoteRepositoryTest {
 
     private val api = FakeFieldProofApi()
+
+    private fun repository() = RemoteRepository(
+        api = api,
+        fileReader = FakeEvidenceFileReader()
+    )
 
     @Test
     fun `photo upload sends parts and returns success`() = runBlocking {
@@ -178,6 +187,27 @@ class RemoteRepositoryTest {
     }
 
     @Test
+    fun `cancellation exceptions are rethrown not swallowed`() {
+        api.uploadException = CancellationException("cancelled")
+
+        val repository = RemoteRepository(
+            api = api,
+            fileReader = FakeEvidenceFileReader(mapOf("file:///x.jpg" to byteArrayOf(1)))
+        )
+        val evidence = evidenceEntity(
+            id = "e1",
+            type = "PHOTO",
+            localUri = "file:///x.jpg"
+        )
+
+        assertThrows(CancellationException::class.java) {
+            runBlocking {
+                repository.uploadEvidence(evidence, evidence.id)
+            }
+        }
+    }
+
+    @Test
     fun `io exceptions are retryable`() = runBlocking {
         api.uploadException = IOException("unreachable")
 
@@ -195,6 +225,109 @@ class RemoteRepositoryTest {
 
         assertTrue(result is EvidenceUploadResult.Failed)
         assertTrue((result as EvidenceUploadResult.Failed).retryable)
+    }
+
+    @Test
+    fun `getInspection returns the server inspection`() = runBlocking {
+        val remote = RemoteInspection(
+            id = "i1",
+            title = "Facility A",
+            location = "Building 1",
+            status = "DRAFT",
+            version = 1,
+            created_at = "2026-01-01T00:00:00Z",
+            updated_at = "2026-01-01T00:00:00Z"
+        )
+        api.inspection = remote
+
+        val result = repository().getInspection("i1")
+
+        assertEquals(WorkflowResult.Success(remote), result)
+    }
+
+    @Test
+    fun `submit passes the expected version`() = runBlocking {
+        api.submitResponse = com.spacedrift.fieldproof.data.remote.RemoteSubmitResponse(
+            id = "i1", status = "SUBMITTED", version = 2
+        )
+
+        val result = repository().submitInspection("i1", expectedVersion = 2)
+
+        assertTrue(result is WorkflowResult.Success)
+        assertEquals("i1", api.submittedInspectionId)
+        assertEquals(2, (result as WorkflowResult.Success).value.version)
+    }
+
+    @Test
+    fun `review passes decision comment and reviewer`() = runBlocking {
+        val result = repository().reviewInspection(
+            inspectionId = "i1",
+            decision = "approved",
+            comment = "Looks good",
+            reviewerId = "demo-reviewer",
+            expectedVersion = 3
+        )
+
+        assertTrue(result is WorkflowResult.Success)
+        assertEquals("i1", api.reviewedInspectionId)
+        assertEquals("approved", api.reviewRequest?.decision)
+        assertEquals("Looks good", api.reviewRequest?.comment)
+        assertEquals("demo-reviewer", api.reviewRequest?.reviewer_id)
+    }
+
+    @Test
+    fun `getReport returns the report`() = runBlocking {
+        api.report = com.spacedrift.fieldproof.data.remote.RemoteReport(
+            inspection_id = "i1", title = "Facility A", location = "Building 1",
+            status = "APPROVED", version = 3, generated_at = "2026-01-01T00:00:00Z",
+            summary = com.spacedrift.fieldproof.data.remote.RemoteReportSummary(1, 1, 0, 0, 0, 1),
+            checklist = emptyList()
+        )
+
+        val result = repository().getReport("i1")
+
+        assertTrue(result is WorkflowResult.Success)
+        assertEquals("APPROVED", (result as WorkflowResult.Success).value.status)
+    }
+
+    @Test
+    fun `workflow 409 is a conflict`() = runBlocking {
+        api.workflowException = httpException(409)
+
+        val result = repository().submitInspection("i1", expectedVersion = null)
+
+        assertTrue(result is WorkflowResult.Conflict)
+    }
+
+    @Test
+    fun `workflow server errors are retryable`() = runBlocking {
+        api.workflowException = httpException(500)
+
+        val result = repository().submitInspection("i1", expectedVersion = null)
+
+        assertTrue(result is WorkflowResult.Failed)
+        assertTrue((result as WorkflowResult.Failed).retryable)
+    }
+
+    @Test
+    fun `workflow io errors are retryable`() = runBlocking {
+        api.workflowException = IOException("offline")
+
+        val result = repository().getReport("i1")
+
+        assertTrue(result is WorkflowResult.Failed)
+        assertTrue((result as WorkflowResult.Failed).retryable)
+    }
+
+    @Test
+    fun `workflow cancellation is rethrown`() {
+        api.workflowException = CancellationException("cancelled")
+
+        assertThrows(CancellationException::class.java) {
+            runBlocking {
+                repository().getInspection("i1")
+            }
+        }
     }
 
     private fun partValue(

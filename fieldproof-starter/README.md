@@ -10,8 +10,12 @@ The API is FastAPI + PostgreSQL; the Android client is Kotlin/Jetpack Compose.
 
 - `android/` — notes for the Android app.
 - `backend/` — FastAPI application (`backend/app`) and tests (`backend/tests`).
-- `docs/` — data model, API contract, sync behaviour, acceptance criteria, demo plan.
-- `tests/fixtures/` — synthetic fixtures only.
+- `docs/` — data model, API contract, sync behaviour, acceptance criteria,
+  demo script (`demo.md`), screenshot gallery (`screenshots/`) and known-limitations
+  log (`known-limitations.md`).
+- `scripts/` — demo seeder (`seed_demo.py`) and clean-environment verification
+  (`verify_clean_setup.sh`).
+- `tests/fixtures/` — synthetic fixtures only (incl. `evidence-sample.png`).
 
 ## Backend quick start
 
@@ -100,13 +104,30 @@ If no `DATABASE_URL`/`TEST_DATABASE_URL` is set, the database-backed tests are
 ## Known gaps (honest status)
 
 - No authentication or authorization yet (by design for this milestone).
-- Android client contract is not fully aligned yet: it creates inspections with the
-  same JSON shape, but evidence upload is now `multipart/form-data`, so the Android
-  `FieldProofApi.uploadEvidence` call still needs to be updated.
 - Checklist item outcomes are seeded as `NOT_STARTED`; there is no endpoint yet to
-  set `PASS`/`FAIL`/`NOT_APPLICABLE` or notes.
-- Reports are JSON; PDF generation is not implemented.
+  set `PASS`/`FAIL`/`NOT_APPLICABLE` or per-item notes on the server. The Android
+  client tracks completion locally. Consequence: report `passed/failed` counts are
+  `0` until that endpoint exists.
 - Schema is created with `create_all`; no migrations (e.g. Alembic) yet.
+- The app syncs on launch or manual *Retry sync*; there is no background/periodic
+  worker (evidence added after launch waits for the next trigger). See
+  `docs/known-limitations.md` `KL-004`.
+- PDF reports reference evidence (kind, id, note snippet) and reviewer signoff but
+  do not embed raw photo bitmaps (`KL-005`).
+- The full, dated list lives in [`docs/known-limitations.md`](docs/known-limitations.md).
+
+## Demo, fixtures & clean-environment verification
+
+- Reproducible walkthrough: [`docs/demo.md`](docs/demo.md) (synthetic data only).
+- Press-ready screenshots: [`docs/screenshots/`](docs/screenshots/).
+- Seed the approved demo dataset against a running API:
+  `python scripts/seed_demo.py` (idempotent replay; writes
+  `docs/screenshots/sample-report.pdf`).
+- Check a clean machine can reproduce the demo:
+  `bash scripts/verify_clean_setup.sh` (add `--full` to also run backend + Android
+  unit tests).
+- Required versions: Python 3.11+, Docker, JDK 17, Android SDK API 37
+  (`build-tools;36.0.0`), Gradle 9.6 (wrapper) — asserted by `verify_clean_setup.sh`.
 
 ## Safety and data handling
 

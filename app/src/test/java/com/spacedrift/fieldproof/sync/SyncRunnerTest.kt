@@ -2,12 +2,16 @@ package com.spacedrift.fieldproof.sync
 
 import com.spacedrift.fieldproof.FakeEvidenceDao
 import com.spacedrift.fieldproof.FakeEvidenceUploader
+import com.spacedrift.fieldproof.FakeInspectionDao
+import com.spacedrift.fieldproof.FakeInspectionUploader
 import com.spacedrift.fieldproof.FakeSyncOperationDao
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
 import com.spacedrift.fieldproof.data.remote.EvidenceUploadResult
+import com.spacedrift.fieldproof.data.remote.InspectionUploadResult
 import com.spacedrift.fieldproof.data.repository.SyncRepository
 import com.spacedrift.fieldproof.evidenceEntity
+import com.spacedrift.fieldproof.inspectionEntity
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -17,17 +21,30 @@ import org.junit.Test
 class SyncRunnerTest {
 
     private val syncDao = FakeSyncOperationDao()
+    private val inspectionDao = FakeInspectionDao()
     private val evidenceDao = FakeEvidenceDao()
     private val syncRepository = SyncRepository(syncDao)
 
-    private fun runner(uploader: FakeEvidenceUploader) = SyncRunner(
+    private fun runner(
+        uploader: FakeEvidenceUploader,
+        inspectionUploader: FakeInspectionUploader = FakeInspectionUploader()
+    ) = SyncRunner(
         syncRepository = syncRepository,
+        inspectionDao = inspectionDao,
         evidenceDao = evidenceDao,
+        inspectionUploader = inspectionUploader,
         uploader = uploader
     )
 
+    private suspend fun markInspectionSynced(inspectionId: String) {
+        inspectionDao.insertInspection(inspectionEntity(id = inspectionId))
+        syncRepository.queueInspection(inspectionId)
+        syncRepository.markSynced(syncRepository.getInspectionOperation(inspectionId)!!)
+    }
+
     private suspend fun queue(evidence: EvidenceEntity): SyncOperationEntity {
         evidenceDao.insertEvidence(evidence)
+        markInspectionSynced(evidence.inspectionId)
         syncRepository.queueEvidence(evidence.id)
         return syncDao.findByEntityId(evidence.id)!!
     }
@@ -105,6 +122,71 @@ class SyncRunnerTest {
     }
 
     @Test
+    fun `stale uploading operation is recovered and synced`() = runBlocking {
+        val uploader = FakeEvidenceUploader()
+        val evidence = evidenceEntity(id = "e1", inspectionId = "i1")
+        queue(evidence)
+
+        // Simulate a worker that claimed the operation then died mid-upload.
+        val stale = syncDao.findByEntityId("e1")!!
+        val longAgo = System.currentTimeMillis() - 60 * 60 * 1000
+        syncDao.updateStatus(
+            operationId = stale.id,
+            status = "UPLOADING",
+            attempts = 1,
+            lastError = null,
+            updatedAt = longAgo
+        )
+
+        val result = runner(uploader).run()
+
+        assertEquals(SyncRunResult.AllDone, result)
+        assertEquals("SYNCED", syncDao.findByEntityId("e1")!!.status)
+        assertEquals("SYNCED", evidenceDao.get("e1")!!.syncStatus)
+    }
+
+    @Test
+    fun `recent uploading operation is left for the active worker`() = runBlocking {
+        val uploader = FakeEvidenceUploader()
+        val evidence = evidenceEntity(id = "e1", inspectionId = "i1")
+        queue(evidence)
+
+        syncRepository.markUploading(syncDao.findByEntityId("e1")!!)
+
+        val result = runner(uploader).run()
+
+        assertEquals(SyncRunResult.AllDone, result)
+        assertTrue(uploader.uploaded.isEmpty())
+        assertEquals("UPLOADING", syncDao.findByEntityId("e1")!!.status)
+    }
+
+    @Test
+    fun `manual retry requeues a failed operation so it can sync`() = runBlocking {
+        val uploader = FakeEvidenceUploader(
+            mutableListOf(
+                EvidenceUploadResult.Failed(retryable = false, message = "rejected")
+            )
+        )
+        val evidence = evidenceEntity(id = "e1", inspectionId = "i1")
+        queue(evidence)
+
+        assertEquals(SyncRunResult.AllDone, runner(uploader).run())
+        assertEquals("FAILED", syncDao.findByEntityId("e1")!!.status)
+        assertEquals(1, syncDao.findByEntityId("e1")!!.attempts)
+
+        syncRepository.retryFailedOperations()
+
+        val requeued = syncDao.findByEntityId("e1")!!
+        assertEquals("QUEUED", requeued.status)
+        assertEquals(0, requeued.attempts)
+        assertEquals(null, requeued.lastError)
+
+        assertEquals(SyncRunResult.AllDone, runner(uploader).run())
+        assertEquals("SYNCED", syncDao.findByEntityId("e1")!!.status)
+        assertEquals("SYNCED", evidenceDao.get("e1")!!.syncStatus)
+    }
+
+    @Test
     fun `conflict keeps operation on conflict status`() = runBlocking {
         val uploader = FakeEvidenceUploader(
             mutableListOf(EvidenceUploadResult.Conflict)
@@ -143,8 +225,8 @@ class SyncRunnerTest {
             SyncOperationEntity(
                 id = UUID.randomUUID().toString(),
                 entityId = "x",
-                entityType = "INSPECTION",
-                operationType = "CREATE",
+                entityType = "CHECKLIST",
+                operationType = "UPDATE",
                 status = "QUEUED",
                 attempts = 0,
                 lastError = null,
@@ -167,6 +249,91 @@ class SyncRunnerTest {
 
         assertEquals(SyncRunResult.AllDone, result)
         assertEquals("FAILED", syncDao.findByEntityId("does-not-exist")!!.status)
+    }
+
+    @Test
+    fun `inspection create is uploaded before evidence`() = runBlocking {
+        val inspectionUploader = FakeInspectionUploader()
+        val uploader = FakeEvidenceUploader()
+        inspectionDao.insertInspection(inspectionEntity(id = "i1"))
+        syncRepository.queueInspection("i1")
+        evidenceDao.insertEvidence(evidenceEntity(id = "e1", inspectionId = "i1"))
+        syncRepository.queueEvidence("e1")
+
+        val result = runner(uploader, inspectionUploader).run()
+
+        assertEquals(SyncRunResult.AllDone, result)
+        assertEquals(listOf("i1"), inspectionUploader.uploaded.map { it.second })
+        assertEquals("SYNCED", syncDao.findByEntityId("i1")!!.status)
+        assertEquals("SYNCED", syncDao.findByEntityId("e1")!!.status)
+        assertEquals("SYNCED", evidenceDao.get("e1")!!.syncStatus)
+    }
+
+    @Test
+    fun `evidence waits until its inspection is synced`() = runBlocking {
+        val inspectionUploader = FakeInspectionUploader(
+            mutableListOf(
+                InspectionUploadResult.Failed(retryable = true, message = "offline")
+            )
+        )
+        val uploader = FakeEvidenceUploader()
+        inspectionDao.insertInspection(inspectionEntity(id = "i1"))
+        syncRepository.queueInspection("i1")
+        evidenceDao.insertEvidence(evidenceEntity(id = "e1", inspectionId = "i1"))
+        syncRepository.queueEvidence("e1")
+
+        val first = runner(uploader, inspectionUploader).run()
+
+        assertEquals(SyncRunResult.Retry, first)
+        assertTrue(uploader.uploaded.isEmpty())
+        assertEquals("QUEUED", syncDao.findByEntityId("e1")!!.status)
+        assertEquals("QUEUED", evidenceDao.get("e1")!!.syncStatus)
+
+        val second = runner(uploader, inspectionUploader).run()
+
+        assertEquals(SyncRunResult.AllDone, second)
+        assertEquals("SYNCED", syncDao.findByEntityId("i1")!!.status)
+        assertEquals("SYNCED", syncDao.findByEntityId("e1")!!.status)
+        assertEquals("e1", uploader.uploaded.single().second)
+    }
+
+    @Test
+    fun `evidence fails when its inspection fails permanently`() = runBlocking {
+        val inspectionUploader = FakeInspectionUploader(
+            mutableListOf(
+                InspectionUploadResult.Failed(retryable = false, message = "invalid")
+            )
+        )
+        val uploader = FakeEvidenceUploader()
+        inspectionDao.insertInspection(inspectionEntity(id = "i1"))
+        syncRepository.queueInspection("i1")
+        evidenceDao.insertEvidence(evidenceEntity(id = "e1", inspectionId = "i1"))
+        syncRepository.queueEvidence("e1")
+
+        val result = runner(uploader, inspectionUploader).run()
+
+        assertEquals(SyncRunResult.AllDone, result)
+        assertTrue(uploader.uploaded.isEmpty())
+        assertEquals("FAILED", syncDao.findByEntityId("i1")!!.status)
+        assertEquals("FAILED", syncDao.findByEntityId("e1")!!.status)
+        assertEquals("FAILED", evidenceDao.get("e1")!!.syncStatus)
+    }
+
+    @Test
+    fun `legacy evidence automatically queues an inspection operation`() = runBlocking {
+        val inspectionUploader = FakeInspectionUploader()
+        val uploader = FakeEvidenceUploader()
+        // The inspection exists locally but was never queued for creation.
+        inspectionDao.insertInspection(inspectionEntity(id = "i1"))
+        evidenceDao.insertEvidence(evidenceEntity(id = "e1", inspectionId = "i1"))
+        syncRepository.queueEvidence("e1")
+
+        val result = runner(uploader, inspectionUploader).run()
+
+        assertEquals(SyncRunResult.AllDone, result)
+        assertEquals("SYNCED", syncDao.findByEntityId("i1")!!.status)
+        assertEquals("SYNCED", syncDao.findByEntityId("e1")!!.status)
+        assertEquals(1, inspectionUploader.uploaded.size)
     }
 
     @Test

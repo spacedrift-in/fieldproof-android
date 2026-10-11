@@ -59,10 +59,14 @@ def create_inspection(db: Session, payload: CreateInspectionRequest) -> Inspecti
         template_id=template_id,
         client_created_at=payload.createdAt,
     )
-    # Seed checklist items from the synthetic demo template.
+    # Seed checklist items from the synthetic demo template. Item ids are derived
+    # deterministically from (inspection_id, template_item_id) using the same
+    # scheme as the Android client (Java UUID.nameUUIDFromBytes), so offline-created
+    # inspections reference the same items the server seeds here.
     for order, item in enumerate(DEMO_TEMPLATE["items"]):
         inspection.checklist_items.append(
             ChecklistItem(
+                id=_checklist_item_id(inspection.id, item["id"]),
                 inspection_id=inspection.id,
                 template_item_id=uuid.UUID(item["id"]),
                 label=item["label"],
@@ -153,6 +157,7 @@ def upload_evidence(
         inspection_id=inspection.id,
         checklist_item_id=checklist_item_id,
         kind=kind,
+        note=note,
         storage_key=storage_key,
         sha256=sha,
         content_type=content_type,
@@ -290,6 +295,8 @@ def build_report(db: Session, inspection_id: uuid.UUID) -> ReportResponse:
         location=inspection.location,
         status=inspection.status,
         version=inspection.version,
+        created_at=inspection.created_at,
+        updated_at=inspection.updated_at,
         generated_at=utcnow(),
         summary=ReportSummary(
             total_items=len(inspection.checklist_items),
@@ -327,6 +334,15 @@ def _missing_required_evidence(inspection: Inspection) -> list[uuid.UUID]:
         elif req == domain.EvidenceRequirement.PHOTO_OR_NOTE and not kinds:
             missing.append(item.id)
     return missing
+
+
+def _checklist_item_id(inspection_id: uuid.UUID, template_item_id: str) -> uuid.UUID:
+    seed = f"{inspection_id}:{template_item_id}".encode("utf-8")
+    digest = bytearray(hashlib.md5(seed).digest())
+    # Java/Kotlin UUID.nameUUIDFromBytes sets version 3 and the RFC 4122 variant bits.
+    digest[6] = (digest[6] & 0x0F) | 0x30
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    return uuid.UUID(bytes=bytes(digest))
 
 
 def _evidence_out(evidence: Evidence):

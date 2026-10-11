@@ -33,6 +33,19 @@ interface SyncOperationDao {
 
     @Query(
         """
+        SELECT * FROM sync_operations
+        WHERE entityType = 'INSPECTION'
+            AND entityId = :inspectionId
+        ORDER BY createdAt DESC
+        LIMIT 1
+        """
+    )
+    suspend fun getInspectionOperation(
+        inspectionId: String
+    ): SyncOperationEntity?
+
+    @Query(
+        """
         UPDATE sync_operations
         SET status = :status,
             attempts = :attempts,
@@ -46,6 +59,34 @@ interface SyncOperationDao {
         status: String,
         attempts: Int,
         lastError: String?,
+        updatedAt: Long
+    )
+
+    @Query(
+        """
+        UPDATE sync_operations
+        SET status = 'QUEUED',
+            updatedAt = :updatedAt
+        WHERE status = 'UPLOADING'
+            AND updatedAt <= :staleBefore
+        """
+    )
+    suspend fun recoverStaleUploads(
+        updatedAt: Long,
+        staleBefore: Long
+    )
+
+    @Query(
+        """
+        UPDATE sync_operations
+        SET status = 'QUEUED',
+            attempts = 0,
+            lastError = NULL,
+            updatedAt = :updatedAt
+        WHERE status = 'FAILED'
+        """
+    )
+    suspend fun requeueFailed(
         updatedAt: Long
     )
 

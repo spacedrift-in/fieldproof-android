@@ -11,6 +11,11 @@
 - [ ] Reviewer sign-off references a specific inspection version.
 - [ ] PDF includes inspection summary, checklist outcomes, evidence references/images, timestamps, and reviewer decision.
 - [ ] Loading, empty, error, and success states are present on primary flows.
-- [ ] Fixtures, logs, and screenshots contain no secrets or private client data.
-- [ ] Setup instructions work on a clean environment and list required versions.
-- [ ] Demo explicitly identifies synthetic data and documents limitations.
+- [x] Fixtures, logs, and screenshots contain no secrets or private client data.
+      (fixtures under `tests/fixtures/` and `backend/app/demo_data.py`; screenshots
+      in `docs/screenshots/`; `.gitignore` excludes `.env`, `local.properties`,
+      `.venv/`, `backend/var/`)
+- [x] Setup instructions work on a clean environment and list required versions.
+      (`scripts/verify_clean_setup.sh`; versions in `README.md` and `docs/demo.md`)
+- [x] Demo explicitly identifies synthetic data and documents limitations.
+      (`docs/demo.md` and `docs/known-limitations.md`)

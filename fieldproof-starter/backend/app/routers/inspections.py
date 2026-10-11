@@ -8,13 +8,14 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import idempotency, service
 from ..config import get_settings
 from ..db import get_db
+from ..report_pdf import render_report_pdf
 from ..schemas import (
     CreateInspectionRequest,
     CreateInspectionResponse,
@@ -255,3 +256,22 @@ def review_inspection(
 )
 def get_report(inspection_id: uuid.UUID, db: Session = Depends(get_db)) -> ReportResponse:
     return service.build_report(db, inspection_id)
+
+
+@router.get(
+    "/inspections/{inspection_id}/report.pdf",
+    summary="Download the reviewed inspection report as a PDF",
+    responses=_CONFLICT_RESPONSES,
+)
+def get_report_pdf(inspection_id: uuid.UUID, db: Session = Depends(get_db)) -> Response:
+    report = service.build_report(db, inspection_id)
+    pdf = render_report_pdf(report)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'inline; filename="inspection-{inspection_id}.pdf"'
+            )
+        },
+    )

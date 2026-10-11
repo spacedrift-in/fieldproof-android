@@ -65,6 +65,7 @@ class EvidenceOut(BaseModel):
     id: uuid.UUID
     checklist_item_id: uuid.UUID | None = None
     kind: str
+    note: str | None = None
     sha256: str
     content_type: str | None = None
     size_bytes: int
@@ -158,6 +159,8 @@ class ReportResponse(BaseModel):
     location: str
     status: str
     version: int
+    created_at: datetime
+    updated_at: datetime
     generated_at: datetime
     summary: ReportSummary
     checklist: list[ReportChecklistItem]

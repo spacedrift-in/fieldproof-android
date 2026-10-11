@@ -3,6 +3,7 @@ package com.spacedrift.fieldproof.di
 import android.content.ContentResolver
 import android.content.Context
 import androidx.room.Room
+import com.spacedrift.fieldproof.data.connectivity.ConnectivityObserver
 import com.spacedrift.fieldproof.data.local.FieldProofDatabase
 import com.spacedrift.fieldproof.data.local.InspectionDao
 import com.spacedrift.fieldproof.data.local.ChecklistItemDao
@@ -37,6 +38,14 @@ object AppModule {
             FieldProofDatabase::class.java,
             "fieldproof.db"
         ).build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideConnectivityObserver(
+        @ApplicationContext context: Context
+    ): ConnectivityObserver {
+        return ConnectivityObserver(context)
     }
 
     @Provides

@@ -6,6 +6,7 @@ database and resets the schema between tests.
 from __future__ import annotations
 
 import base64
+import hashlib
 import uuid
 
 # A tiny valid 1x1 PNG; the API only checks that photos are image/* uploads.
@@ -44,6 +45,19 @@ def _upload(client, inspection_id, item_id, *, key, evidence_id, content=PNG_BYT
     )
 
 
+def _upload_note(client, inspection_id, item_id, *, key, evidence_id, note):
+    return client.post(
+        f"/api/v1/inspections/{inspection_id}/evidence",
+        data={
+            "id": str(evidence_id),
+            "kind": "note",
+            "checklist_item_id": str(item_id) if item_id else "",
+            "note": note,
+        },
+        headers={"Idempotency-Key": key},
+    )
+
+
 def _required_items(client, inspection_id):
     payload = _get(client, inspection_id).json()
     return [item for item in payload["checklist_items"] if item["required"]]
@@ -65,6 +79,32 @@ def test_create_inspection_seeds_checklist(client):
     assert payload["version"] == 1
     assert len(payload["checklist_items"]) == 3
     assert sum(1 for item in payload["checklist_items"] if item["required"]) == 2
+
+
+def _java_name_uuid(data: bytes) -> uuid.UUID:
+    """Replica of Java/Kotlin UUID.nameUUIDFromBytes (MD5, version 3, RFC variant)."""
+    digest = bytearray(hashlib.md5(data).digest())
+    digest[6] = (digest[6] & 0x0F) | 0x30
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    return uuid.UUID(bytes=bytes(digest))
+
+
+def test_checklist_item_ids_match_client_derivation(client):
+    response, inspection_id, _, _ = _create(client)
+    assert response.status_code == 201
+
+    DEMO_TEMPLATE_ITEM_IDS = [
+        "41adf50d-2c24-4e13-9b7e-2dfae32bfe01",
+        "41adf50d-2c24-4e13-9b7e-2dfae32bfe02",
+        "41adf50d-2c24-4e13-9b7e-2dfae32bfe03",
+    ]
+    expected = {
+        str(_java_name_uuid(f"{inspection_id}:{template_id}".encode("utf-8")))
+        for template_id in DEMO_TEMPLATE_ITEM_IDS
+    }
+
+    payload = _get(client, inspection_id).json()
+    assert {item["id"] for item in payload["checklist_items"]} == expected
 
 
 def test_create_inspection_is_idempotent(client):
@@ -163,6 +203,43 @@ def test_evidence_key_reuse_with_different_content_conflicts(client):
         client, inspection_id, item["id"], key=key, evidence_id=evidence_id, content=PNG_BYTES + b"x"
     )
     assert conflict.status_code == 409
+
+
+def test_note_evidence_persists_content(client):
+    _, inspection_id, _, _ = _create(client)
+    item = _required_items(client, inspection_id)[0]
+    evidence_id = uuid.uuid4()
+
+    response = _upload_note(
+        client,
+        inspection_id,
+        item["id"],
+        key=str(uuid.uuid4()),
+        evidence_id=evidence_id,
+        note="Handrail loose",
+    )
+    assert response.status_code == 201
+    assert response.json() == {"id": str(evidence_id), "status": "SYNCED"}
+
+    payload = _get(client, inspection_id).json()
+    saved = [e for e in payload["evidence"] if e["id"] == str(evidence_id)]
+    assert len(saved) == 1
+    assert saved[0]["kind"] == "note"
+    assert saved[0]["note"] == "Handrail loose"
+
+
+def test_note_requires_non_empty_text(client):
+    _, inspection_id, _, _ = _create(client)
+    item = _required_items(client, inspection_id)[0]
+    response = _upload_note(
+        client,
+        inspection_id,
+        item["id"],
+        key=str(uuid.uuid4()),
+        evidence_id=uuid.uuid4(),
+        note="   ",
+    )
+    assert response.status_code == 422
 
 
 def test_photo_requires_a_file(client):
@@ -292,3 +369,24 @@ def test_review_changes_requested_allows_more_evidence(client):
     assert _upload(
         client, inspection_id, item["id"], key=str(uuid.uuid4()), evidence_id=uuid.uuid4()
     ).status_code == 201
+
+
+def test_report_pdf_export_after_approval(client):
+    inspection_id = _submit_ready_inspection(client)
+    client.post(
+        f"/api/v1/inspections/{inspection_id}/review",
+        json={"decision": "approved", "comment": "Looks good"},
+    )
+
+    response = client.get(f"/api/v1/inspections/{inspection_id}/report.pdf")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF")
+    assert len(response.content) > 1000
+
+
+def test_report_pdf_unavailable_before_approval(client):
+    inspection_id = _submit_ready_inspection(client)
+    response = client.get(f"/api/v1/inspections/{inspection_id}/report.pdf")
+    assert response.status_code == 409

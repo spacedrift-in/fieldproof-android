@@ -95,6 +95,8 @@ class Evidence(Base):
         ForeignKey("checklist_items.id", ondelete="SET NULL"), nullable=True
     )
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Text body for ``kind == "note"`` evidence; null for photos.
+    note: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     # Server-side storage reference only. Client local paths are never accepted.
     storage_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)

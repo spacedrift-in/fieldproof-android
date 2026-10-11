@@ -1,3 +1,79 @@
 <resources>
     <string name="app_name">FieldProof</string>
+
+    <!-- App / home -->
+    <string name="home_title">FieldProof</string>
+    <string name="home_subtitle">Field inspection workspace</string>
+    <string name="inspections_heading">Inspections</string>
+    <string name="new_inspection">New inspection</string>
+    <string name="create_inspection">Create inspection</string>
+    <string name="create_dialog_title">New inspection</string>
+    <string name="create_dialog_desc">Start a field inspection. It is saved on this device and synced when you are back online.</string>
+    <string name="field_title">Title</string>
+    <string name="field_title_default">New Facility Inspection</string>
+    <string name="field_location">Location</string>
+    <string name="field_location_default">Demo Site</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_create">Create</string>
+    <string name="action_back">Back</string>
+    <string name="action_retry_sync">Retry sync</string>
+    <string name="action_open">Open</string>
+    <string name="action_close">Close</string>
+    <string name="action_take_photo">Take photo</string>
+    <string name="action_save_note">Save note</string>
+
+    <!-- Empty / loading states -->
+    <string name="empty_inspections_title">No inspections yet</string>
+    <string name="empty_inspections_body">Create an inspection to start capturing field evidence. Your changes are saved on this device and sync automatically.</string>
+    <string name="loading_inspections">Loading inspections…</string>
+
+    <!-- Sync -->
+    <string name="sync_online">Online</string>
+    <string name="sync_syncing">Syncing…</string>
+    <string name="sync_synced_title">Sync complete</string>
+    <string name="sync_synced_body">All inspection data uploaded</string>
+    <string name="sync_offline_title">Offline</string>
+    <string name="sync_offline_body">Changes saved on this device</string>
+    <string name="sync_waiting_body">%1$d item(s) saved on this device</string>
+    <string name="sync_attention_title">Sync needs attention</string>
+    <string name="sync_items_waiting">%1$d item(s) waiting</string>
+
+    <!-- Inspection detail -->
+    <string name="inspection_heading">Inspection</string>
+    <string name="checklist_heading">Checklist</string>
+    <string name="evidence_heading">Evidence</string>
+    <string name="required_label">Required</string>
+    <string name="optional_label">Optional</string>
+    <string name="photo_attached">Photo attached</string>
+    <string name="evidence_missing">Evidence missing</string>
+    <string name="evidence_photo_desc">Evidence photo</string>
+    <string name="action_open_inspection">Open inspection</string>
+    <string name="action_view_photo">View larger photo</string>
+    <string name="add_evidence">Add evidence</string>
+    <string name="capture_evidence">Capture evidence</string>
+    <string name="applies_to">Applies to</string>
+    <string name="general">General</string>
+    <string name="evidence_note_label">Evidence note</string>
+    <string name="evidence_note_placeholder">Describe what you observed</string>
+    <string name="required_checklist_progress">%1$d of %2$d required items complete</string>
+    <string name="evidence_count">%1$d evidence</string>
+
+    <!-- Submission / review / report -->
+    <string name="submit_title">Submission</string>
+    <string name="workflow_ready">Ready to submit</string>
+    <string name="workflow_not_ready">Not ready</string>
+    <string name="submit_inspection">Submit inspection</string>
+    <string name="approve_demo_signoff">Approve (demo signoff)</string>
+    <string name="reviewer_signoff">Reviewer signoff</string>
+    <string name="reviewed_report">Reviewed report</string>
+    <string name="open_report">Open report</string>
+    <string name="export_pdf">Export PDF</string>
+    <string name="demo_disclaimer">Demo report. Not a compliance certification.</string>
+    <string name="report_pdf_open">Open report (PDF)</string>
+    <string name="report_pdf_opening">Preparing PDF…</string>
+    <string name="report_pdf_no_viewer">No PDF viewer found. Use Export PDF instead.</string>
+    <string name="report_pdf_exported">Report exported.</string>
+    <string name="report_pdf_failed">PDF failed: %1$s</string>
+    <string name="report_ready_title">Reviewed and approved</string>
+    <string name="report_ready_body">This inspection is approved. Open or export the signed-style report below.</string>
 </resources>

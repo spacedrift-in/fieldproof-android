@@ -2,11 +2,16 @@ package com.spacedrift.fieldproof
 
 import com.spacedrift.fieldproof.data.local.EvidenceDao
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
+import com.spacedrift.fieldproof.data.local.InspectionDao
+import com.spacedrift.fieldproof.data.local.InspectionEntity
+import com.spacedrift.fieldproof.data.local.InspectionSummaryEntity
 import com.spacedrift.fieldproof.data.local.SyncOperationDao
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
 import com.spacedrift.fieldproof.data.remote.EvidenceFileReader
 import com.spacedrift.fieldproof.data.remote.EvidenceUploadResult
 import com.spacedrift.fieldproof.data.remote.EvidenceUploader
+import com.spacedrift.fieldproof.data.remote.InspectionUploadResult
+import com.spacedrift.fieldproof.data.remote.InspectionUploader
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -47,6 +52,40 @@ class FakeSyncOperationDao : SyncOperationDao {
             updatedAt = updatedAt
         )
         update()
+    }
+
+    override suspend fun recoverStaleUploads(updatedAt: Long, staleBefore: Long) {
+        store.values
+            .filter { it.status == "UPLOADING" && it.updatedAt <= staleBefore }
+            .forEach { operation ->
+                store[operation.id] = operation.copy(
+                    status = "QUEUED",
+                    updatedAt = updatedAt
+                )
+            }
+        update()
+    }
+
+    override suspend fun requeueFailed(updatedAt: Long) {
+        store.values
+            .filter { it.status == "FAILED" }
+            .forEach { operation ->
+                store[operation.id] = operation.copy(
+                    status = "QUEUED",
+                    attempts = 0,
+                    lastError = null,
+                    updatedAt = updatedAt
+                )
+            }
+        update()
+    }
+
+    override suspend fun getInspectionOperation(
+        inspectionId: String
+    ): SyncOperationEntity? {
+        return store.values
+            .filter { it.entityType == "INSPECTION" && it.entityId == inspectionId }
+            .maxByOrNull { it.createdAt }
     }
 
     override suspend fun delete(operationId: String) {
@@ -96,6 +135,46 @@ class FakeEvidenceDao : EvidenceDao {
     fun get(id: String): EvidenceEntity? = store[id]
 }
 
+class FakeInspectionDao : InspectionDao {
+
+    private val store = linkedMapOf<String, InspectionEntity>()
+
+    override suspend fun insertInspection(inspection: InspectionEntity) {
+        store[inspection.id] = inspection
+    }
+
+    override fun observeInspections(): Flow<List<InspectionEntity>> {
+        return MutableStateFlow(store.values.sortedByDescending { it.updatedAt })
+    }
+
+    override fun observeInspectionSummaries(): Flow<List<InspectionSummaryEntity>> {
+        val items = store.values
+            .sortedByDescending { it.updatedAt }
+            .map { inspection ->
+                InspectionSummaryEntity(
+                    id = inspection.id,
+                    title = inspection.title,
+                    location = inspection.location,
+                    status = inspection.status,
+                    createdAt = inspection.createdAt,
+                    updatedAt = inspection.updatedAt,
+                    totalItems = 0,
+                    completedItems = 0,
+                    evidenceCount = 0
+                )
+            }
+        return MutableStateFlow(items)
+    }
+
+    override suspend fun getInspection(inspectionId: String): InspectionEntity? = store[inspectionId]
+
+    override suspend fun deleteInspection(inspectionId: String) {
+        store.remove(inspectionId)
+    }
+
+    fun get(id: String): InspectionEntity? = store[id]
+}
+
 class FakeEvidenceFileReader(
     private val responses: Map<String, ByteArray?> = emptyMap()
 ) : EvidenceFileReader {
@@ -123,6 +202,42 @@ class FakeEvidenceUploader(
         }
     }
 }
+
+class FakeInspectionUploader(
+    private val outcomes: MutableList<InspectionUploadResult> = mutableListOf()
+) : InspectionUploader {
+
+    val uploaded = mutableListOf<Pair<InspectionEntity, String>>()
+
+    override suspend fun uploadInspection(
+        inspection: InspectionEntity,
+        idempotencyKey: String
+    ): InspectionUploadResult {
+        uploaded.add(inspection to idempotencyKey)
+
+        return if (outcomes.isEmpty()) {
+            InspectionUploadResult.Success
+        } else {
+            outcomes.removeAt(0)
+        }
+    }
+}
+
+fun inspectionEntity(
+    id: String = "inspection-1",
+    title: String = "Facility A",
+    location: String = "Building 1",
+    status: String = "DRAFT",
+    createdAt: Long = 1000L,
+    updatedAt: Long = 1000L
+) = InspectionEntity(
+    id = id,
+    title = title,
+    location = location,
+    status = status,
+    createdAt = createdAt,
+    updatedAt = updatedAt
+)
 
 fun evidenceEntity(
     id: String = "evidence-1",

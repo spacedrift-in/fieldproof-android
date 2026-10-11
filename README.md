@@ -25,9 +25,11 @@ an app that keeps working in airplane mode, makes sync state visible, and never
 silently loses evidence.
 
 > **Status:** early, active development. The offline vertical slice (inspection →
-> checklist → evidence capture) is implemented and builds for both debug and
-> release. Sync, report export and conflict resolution are **not implemented yet**.
-> There are no performance or compliance claims in this repository.
+> checklist → evidence capture → durable sync → server-side submit/review/PDF
+> report) is implemented and builds for both debug and release, with JVM +
+> instrumented test suites and a CI emulator lane. Background (periodic) automatic
+> sync and checklist-outcome uploads are not implemented yet. There are no
+> performance or compliance claims in this repository.
 
 ## Table of contents
 
@@ -75,8 +77,10 @@ a documented API contract and a small FastAPI skeleton. See
 | **UI** | Jetpack Compose, Material 3, loading / empty / error-aware states |
 | **API contract** | Retrofit client matching the documented `/api/v1` endpoints, incl. `Idempotency-Key` |
 
-**Not implemented yet:** background upload execution, retry/backoff wiring,
-conflict-resolution UI, report export, authentication.
+**Not implemented yet:** background (periodic) automatic sync, checklist-outcome
+upload, conflict-resolution UI, authentication. See
+[`fieldproof-starter/docs/known-limitations.md`](fieldproof-starter/docs/known-limitations.md)
+for the full, dated log.
 
 ## Architecture
 
@@ -98,7 +102,7 @@ flowchart TD
     Repo --> Room
     Repo --> WM
     WM --> API
-    API -. "not wired yet" .-> Server
+    API ---> Server
     Room -. "Flow" .-> UI
 ```
 
@@ -190,24 +194,54 @@ Open the folder in Android Studio to use the Run configuration.
 ## Testing
 
 ```bash
-./gradlew :app:testDebugUnitTest      # JVM unit tests
-./gradlew :app:connectedDebugAndroidTest  # instrumented tests (device/emulator)
+./gradlew :app:testDebugUnitTest      # JVM unit tests (Room, sync, retries)
+./gradlew :app:assembleDebugAndroidTest  # build the instrumented test APK
 ```
+
+### Device / emulator UI tests
+
+Instrumented Compose tests cover inspection creation, checklist completion,
+camera permission denial, the evidence-capture state, and sync-state display.
+They run against the real framework on a device or emulator (API 34 is pinned
+in CI; any API ≥ 24 works):
+
+```bash
+# 1. Start an emulator (or plug in a device)
+emulator -avd <name>
+
+# 2. Run the instrumented tests
+./gradlew :app:connectedDebugAndroidTest
+```
+
+CI runs this suite automatically in the dedicated `android-instrumented`
+emulator lane (API 34, x86_64, headless — see `.github/workflows/ci.yml`). The
+same suite can be run on a physical device; a Google Play-protected ROM (e.g.
+MIUI) may require "Install via USB" and can block instrumentation input
+injection.
+
+To reproduce the full walking demo with the backend (synthetic data only), follow
+[`fieldproof-starter/docs/demo.md`](fieldproof-starter/docs/demo.md); screenshots
+are in [`fieldproof-starter/docs/screenshots/`](fieldproof-starter/docs/screenshots/).
 
 ## Backend skeleton
 
-The starter includes a FastAPI health endpoint. Only `GET /health` exists today.
+The starter includes a PostgreSQL-backed FastAPI service for inspections,
+checklist items, evidence (multipart), submit/review and PDF report export, with
+idempotency and optimistic concurrency. See
+[`fieldproof-starter/README.md`](fieldproof-starter/README.md).
 
 ```bash
 cd fieldproof-starter
+docker compose up -d db
 python -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
-uvicorn backend.app.main:app --reload
+uvicorn app.main:app --app-dir backend --reload
 ```
 
-The Android client points at `http://10.0.2.2:8000/` (the host loopback as seen
-from the Android emulator). The full API contract — including idempotent evidence
-upload and optimistic concurrency — is in
+The Android client points at `http://127.0.0.1:8000/`
+(`app/src/main/java/com/spacedrift/fieldproof/di/NetworkModule.kt`); use
+`adb reverse tcp:8000 tcp:8000` on a device/emulator. The full API contract —
+including idempotent evidence upload and optimistic concurrency — is in
 [`fieldproof-starter/docs/api-contract.md`](fieldproof-starter/docs/api-contract.md).
 
 ## Roadmap
@@ -215,10 +249,10 @@ upload and optimistic concurrency — is in
 | Milestone | Required evidence | State |
 | :--- | :--- | :--- |
 | 1 · Definition | User flow, data model, API contract, acceptance criteria | ✅ docs in `fieldproof-starter/docs/` |
-| 2 · Vertical slice | One complete offline workflow on synthetic fixtures | 🟡 capture done; sync pending |
-| 3 · Reliability | Failure recovery, access checks, automated tests | ⬜ |
-| 4 · Demonstration | Repeatable demo, screenshots, documented limitations | ⬜ |
-| 5 · Handoff | Reproducible setup, build instructions, maintenance notes | 🟡 this README |
+| 2 · Vertical slice | One complete offline workflow on synthetic fixtures | ✅ see `docs/demo.md` Steps 1-12 |
+| 3 · Reliability | Failure recovery, access checks, automated tests | 🟡 52 JVM + 25 instrumented tests; CI emulator lane |
+| 4 · Demonstration | Repeatable demo, screenshots, documented limitations | ✅ `docs/demo.md`, `docs/screenshots/`, `docs/known-limitations.md` |
+| 5 · Handoff | Reproducible setup, build instructions, maintenance notes | 🟡 this README + `scripts/verify_clean_setup.sh` |
 
 ## Design documents
 
@@ -228,7 +262,9 @@ upload and optimistic concurrency — is in
 - [Data model](fieldproof-starter/docs/data-model.md)
 - [Sync state machine](fieldproof-starter/docs/sync-state-machine.md)
 - [Acceptance criteria](fieldproof-starter/docs/acceptance-criteria.md)
-- [Demo plan](fieldproof-starter/docs/demo.md)
+- [Demo script (reproducible walkthrough)](fieldproof-starter/docs/demo.md)
+- [Screenshot gallery](fieldproof-starter/docs/screenshots/)
+- [Known limitations log](fieldproof-starter/docs/known-limitations.md)
 
 ## Contributing
 
