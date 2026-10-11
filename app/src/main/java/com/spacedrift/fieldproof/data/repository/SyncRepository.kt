@@ -63,6 +63,32 @@ class SyncRepository @Inject constructor(
         )
     }
 
+    suspend fun keepQueued(
+        operation: SyncOperationEntity,
+        error: String
+    ) {
+        syncOperationDao.updateStatus(
+            operationId = operation.id,
+            status = "QUEUED",
+            attempts = operation.attempts,
+            lastError = error,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    suspend fun markConflict(
+        operation: SyncOperationEntity,
+        error: String
+    ) {
+        syncOperationDao.updateStatus(
+            operationId = operation.id,
+            status = "CONFLICT",
+            attempts = operation.attempts,
+            lastError = error,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
     suspend fun markSynced(
         operation: SyncOperationEntity
     ) {

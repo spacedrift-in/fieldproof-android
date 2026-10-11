@@ -5,7 +5,10 @@ import androidx.lifecycle.viewModelScope
 import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionEntity
+import com.spacedrift.fieldproof.data.local.SyncOperationEntity
 import com.spacedrift.fieldproof.data.repository.InspectionRepository
+import com.spacedrift.fieldproof.data.repository.SyncRepository
+import com.spacedrift.fieldproof.sync.SyncScheduler
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
@@ -16,7 +19,9 @@ import javax.inject.Inject
 
 @HiltViewModel
 class InspectionViewModel @Inject constructor(
-    private val repository: InspectionRepository
+    private val repository: InspectionRepository,
+    private val syncRepository: SyncRepository,
+    private val syncScheduler: SyncScheduler
 ) : ViewModel() {
 
     val inspections: StateFlow<List<InspectionEntity>> =
@@ -27,6 +32,19 @@ class InspectionViewModel @Inject constructor(
                 started = SharingStarted.WhileSubscribed(5_000),
                 initialValue = emptyList()
             )
+
+    val syncOperations: StateFlow<List<SyncOperationEntity>> =
+        syncRepository
+            .observeOperations()
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5_000),
+                initialValue = emptyList()
+            )
+
+    fun retrySync() {
+        syncScheduler.forceRetry()
+    }
 
     fun observeChecklist(
         inspectionId: String

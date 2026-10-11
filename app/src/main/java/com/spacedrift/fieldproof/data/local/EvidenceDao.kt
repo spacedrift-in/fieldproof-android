@@ -15,6 +15,13 @@ interface EvidenceDao {
     )
 
     @Query(
+        "SELECT * FROM evidence WHERE id = :id"
+    )
+    suspend fun getEvidence(
+        id: String
+    ): EvidenceEntity?
+
+    @Query(
         "SELECT * FROM evidence " +
                 "WHERE inspectionId = :inspectionId " +
                 "ORDER BY capturedAt DESC"

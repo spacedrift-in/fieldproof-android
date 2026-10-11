@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -47,6 +48,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionEntity
+import com.spacedrift.fieldproof.data.local.SyncOperationEntity
 import com.spacedrift.fieldproof.ui.inspection.InspectionViewModel
 import com.spacedrift.fieldproof.ui.theme.FieldProofTheme
 import com.spacedrift.fieldproof.ui.camera.CameraCaptureScreen
@@ -75,6 +77,7 @@ fun FieldProofApp(
     viewModel: InspectionViewModel = hiltViewModel()
 ) {
     val inspections by viewModel.inspections.collectAsState()
+    val syncOperations by viewModel.syncOperations.collectAsState()
 
     var selectedInspection by remember {
         mutableStateOf<InspectionEntity?>(null)
@@ -83,6 +86,10 @@ fun FieldProofApp(
     if (selectedInspection == null) {
         InspectionListScreen(
             inspections = inspections,
+            syncOperations = syncOperations,
+            onRetrySync = {
+                viewModel.retrySync()
+            },
             onCreateInspection = {
                 viewModel.createInspection(
                     title = "New Facility Inspection",
@@ -108,6 +115,8 @@ fun FieldProofApp(
 @Composable
 private fun InspectionListScreen(
     inspections: List<InspectionEntity>,
+    syncOperations: List<SyncOperationEntity>,
+    onRetrySync: () -> Unit,
     onCreateInspection: () -> Unit,
     onInspectionClick: (InspectionEntity) -> Unit
 ) {
@@ -135,7 +144,10 @@ private fun InspectionListScreen(
             item {
                 Spacer(modifier = Modifier.height(8.dp))
 
-                OfflineStatusCard()
+                SyncStatusCard(
+                    operations = syncOperations,
+                    onRetrySync = onRetrySync
+                )
 
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -198,38 +210,132 @@ private fun InspectionListScreen(
 }
 
 @Composable
-private fun OfflineStatusCard() {
+private fun SyncStatusCard(
+    operations: List<SyncOperationEntity>,
+    onRetrySync: () -> Unit
+) {
+    val queued = operations.count { it.status == "QUEUED" }
+    val uploading = operations.count { it.status == "UPLOADING" }
+    val synced = operations.count { it.status == "SYNCED" }
+    val failed = operations.count { it.status == "FAILED" }
+    val conflict = operations.count { it.status == "CONFLICT" }
+
+    val pending = queued + uploading
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(16.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.CloudOff,
-                contentDescription = null
-            )
-
-            Spacer(modifier = Modifier.padding(8.dp))
-
-            Column {
-                Text(
-                    text = "Offline mode",
-                    fontWeight = FontWeight.Bold
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CloudOff,
+                    contentDescription = null
                 )
 
+                Spacer(modifier = Modifier.padding(8.dp))
+
+                Column {
+                    Text(
+                        text = "Sync status",
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        text = "Changes are stored locally until they can sync.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+
+            if (operations.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    SyncCount(label = "Queued", count = queued)
+                    SyncCount(label = "Uploading", count = uploading)
+                    SyncCount(label = "Synced", count = synced)
+                    SyncCount(label = "Failed", count = failed)
+                    SyncCount(label = "Conflict", count = conflict)
+                }
+            }
+
+            val issue = operations
+                .filter { it.status == "FAILED" || it.status == "CONFLICT" }
+                .maxByOrNull { it.updatedAt }
+
+            issue?.let { operation ->
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Text(
-                    text = "Changes are stored locally and can sync later.",
-                    style = MaterialTheme.typography.bodyMedium
+                    text = operation.lastError
+                        ?: "${syncStatusLabel(operation.status)} — manual retry may help.",
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
+
+            if (pending > 0 || conflict > 0 || failed > 0) {
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Button(
+                    onClick = onRetrySync,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = null
+                    )
+
+                    Spacer(modifier = Modifier.padding(4.dp))
+
+                    Text("Retry sync")
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun SyncCount(
+    label: String,
+    count: Int
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = count.toString(),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall
+        )
+    }
+}
+
+fun syncStatusLabel(status: String): String {
+    return when (status) {
+        "QUEUED" -> "Queued"
+        "UPLOADING" -> "Uploading"
+        "SYNCED" -> "Synced"
+        "FAILED" -> "Failed"
+        "CONFLICT" -> "Conflict"
+        else -> status
     }
 }
 
@@ -719,7 +825,7 @@ private fun EvidenceCard(
                 )
 
                 Text(
-                    text = evidence.syncStatus,
+                    text = syncStatusLabel(evidence.syncStatus),
                     style = MaterialTheme.typography.labelMedium
                 )
             }

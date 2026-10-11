@@ -1,5 +1,6 @@
 package com.spacedrift.fieldproof.di
 
+import android.content.ContentResolver
 import android.content.Context
 import androidx.room.Room
 import com.spacedrift.fieldproof.data.local.FieldProofDatabase
@@ -17,6 +18,14 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    fun provideContentResolver(
+        @ApplicationContext context: Context
+    ): ContentResolver {
+        return context.contentResolver
+    }
 
     @Provides
     @Singleton
