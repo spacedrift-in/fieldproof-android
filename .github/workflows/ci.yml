@@ -37,7 +37,7 @@ jobs:
         run: sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Assemble debug
         run: ./gradlew :app:assembleDebug --no-daemon
@@ -84,7 +84,7 @@ jobs:
         run: sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Run instrumented tests on emulator
         uses: reactivecircus/android-emulator-runner@v2
