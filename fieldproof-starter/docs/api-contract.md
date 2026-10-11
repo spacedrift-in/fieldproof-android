@@ -36,6 +36,29 @@ The client creates a stable operation UUID before attempting an upload and sends
 
 An update includes `expected_version`. If it differs from the current server version, return `409` with current server version and enough safe metadata for the client to present a conflict-resolution UI. Do not silently apply last-write-wins.
 
-## Not implemented yet
+## Implementation status
 
-This document is a contract proposal. Except for `GET /health`, these endpoints are not implemented in the starter skeleton.
+Implemented and covered by tests against PostgreSQL:
+
+- `GET /health`
+- `POST /api/v1/inspections` (requires `Idempotency-Key`)
+- `GET /api/v1/inspections/{inspection_id}`
+- `POST /api/v1/inspections/{inspection_id}/evidence` (multipart file + metadata, requires `Idempotency-Key`)
+- `POST /api/v1/inspections/{inspection_id}/submit`
+- `POST /api/v1/inspections/{inspection_id}/review`
+- `GET /api/v1/inspections/{inspection_id}/report`
+
+Not implemented yet: `GET /api/v1/templates`, `PUT /api/v1/inspections/{inspection_id}`,
+authentication/authorization, PDF report rendering, and checklist item outcome updates.
+
+### Evidence upload format
+
+`POST /api/v1/inspections/{inspection_id}/evidence` uses `multipart/form-data`:
+
+- `file` — the photo (required when `kind=photo`; must be `image/*`, max `MAX_EVIDENCE_BYTES`).
+- `id` — optional client-generated evidence UUID (server generates one if omitted).
+- `kind` — `photo` or `note`.
+- `checklist_item_id` — optional checklist item the evidence belongs to.
+- `note` — text for `kind=note`.
+- `captured_at` — optional capture time, epoch milliseconds.
+- header `Idempotency-Key` — required.

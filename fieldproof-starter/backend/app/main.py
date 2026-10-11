@@ -1,138 +1,40 @@
-from datetime import datetime, timezone
-from typing import Dict
-from uuid import UUID
+"""FieldProof API application factory.
 
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+Run with: ``uvicorn app.main:app --app-dir backend --reload`` from this folder.
+Interactive OpenAPI docs: http://127.0.0.1:8000/docs
+"""
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from .db import init_db
+from .routers import inspections
+from .schemas import HealthResponse
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Bootstrap the schema for the demo. Production should run migrations instead.
+    init_db()
+    yield
 
 
 app = FastAPI(
     title="FieldProof API",
-    version="0.1.0",
-)
-
-
-# ---------------------------------------------------------------------------
-# Demo in-memory storage
-# ---------------------------------------------------------------------------
-#
-# We are intentionally starting with in-memory storage so we can prove the
-# API contract first. PostgreSQL will replace this storage layer afterward.
-#
-
-inspections: Dict[str, dict] = {}
-idempotency_results: Dict[str, dict] = {}
-
-
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
-
-class HealthResponse(BaseModel):
-    status: str
-    service: str
-    stage: str
-
-
-class CreateInspectionRequest(BaseModel):
-    id: UUID
-    title: str = Field(min_length=1, max_length=200)
-    location: str = Field(min_length=1, max_length=200)
-    createdAt: int
-
-
-class CreateInspectionResponse(BaseModel):
-    id: UUID
-    status: str
-
-
-# ---------------------------------------------------------------------------
-# Health
-# ---------------------------------------------------------------------------
-
-@app.get("/health", response_model=HealthResponse)
-async def health():
-    return HealthResponse(
-        status="ok",
-        service="fieldproof-api",
-        stage="starter",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Create inspection
-# ---------------------------------------------------------------------------
-
-@app.post(
-    "/api/v1/inspections",
-    response_model=CreateInspectionResponse,
-)
-async def create_inspection(
-    request: CreateInspectionRequest,
-    idempotency_key: str | None = Header(
-        default=None,
-        alias="Idempotency-Key",
+    version="0.2.0",
+    description=(
+        "Offline-first field inspection API. Postgres-backed persistence for "
+        "inspections, checklist items, evidence, reviews and idempotency records. "
+        "Synthetic demo data only; authentication is not implemented yet."
     ),
-):
-    if not idempotency_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Idempotency-Key header is required",
-        )
+    lifespan=lifespan,
+)
 
-    # Same request repeated -> return the original result.
-    if idempotency_key in idempotency_results:
-        return idempotency_results[idempotency_key]
-
-    inspection_id = str(request.id)
-
-    # Client-generated UUID gives us deterministic identity.
-    if inspection_id in inspections:
-        existing = inspections[inspection_id]
-
-        result = CreateInspectionResponse(
-            id=UUID(existing["id"]),
-            status=existing["status"],
-        )
-
-        idempotency_results[idempotency_key] = result
-        return result
-
-    now = datetime.now(timezone.utc)
-
-    inspection = {
-        "id": inspection_id,
-        "title": request.title,
-        "location": request.location,
-        "status": "DRAFT",
-        "createdAt": request.createdAt,
-        "serverCreatedAt": now.isoformat(),
-    }
-
-    inspections[inspection_id] = inspection
-
-    result = CreateInspectionResponse(
-        id=request.id,
-        status="DRAFT",
-    )
-
-    idempotency_results[idempotency_key] = result
-
-    return result
+app.include_router(inspections.router, prefix="/api/v1")
 
 
-# ---------------------------------------------------------------------------
-# Get inspection
-# ---------------------------------------------------------------------------
-
-@app.get("/api/v1/inspections/{inspection_id}")
-async def get_inspection(inspection_id: UUID):
-    inspection = inspections.get(str(inspection_id))
-
-    if inspection is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Inspection not found",
-        )
-
-    return inspection
+@app.get("/health", response_model=HealthResponse, tags=["system"], summary="Liveness check")
+async def health() -> HealthResponse:
+    return HealthResponse(status="ok", service="fieldproof-api", stage="starter")

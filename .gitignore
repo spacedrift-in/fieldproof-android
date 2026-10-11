@@ -19,3 +19,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Backend local artifacts
+.pytest_cache/
+fieldproof-starter/.pytest_cache/
+fieldproof-starter/backend/var/
