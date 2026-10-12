@@ -29,6 +29,11 @@ interface InspectionDao {
         inspectionId: String
     ): InspectionEntity?
 
+    @Query("SELECT * FROM inspections WHERE id = :inspectionId LIMIT 1")
+    fun observeInspection(
+        inspectionId: String
+    ): Flow<InspectionEntity?>
+
     @Query("DELETE FROM inspections WHERE id = :inspectionId")
     suspend fun deleteInspection(
         inspectionId: String

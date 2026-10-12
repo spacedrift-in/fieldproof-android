@@ -73,4 +73,28 @@ class CameraPermissionDeviceTest {
         assertTrue(closed)
         org.junit.Assert.assertFalse(requested)
     }
+
+    @Test
+    fun permanentlyDenied_offersOpenSettingsInsteadOfDeadEnd() {
+        var openedSettings = false
+        var requested = false
+        composeRule.setContent {
+            FieldProofTheme {
+                CameraPermissionScreen(
+                    onRequestPermission = { requested = true },
+                    onClose = {},
+                    permanentlyDenied = true,
+                    onOpenSettings = { openedSettings = true }
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Open settings").assertIsDisplayed()
+        composeRule.onNodeWithText("Allow camera").assertDoesNotExist()
+
+        composeRule.onNodeWithText("Open settings").performClick()
+
+        assertTrue(openedSettings)
+        org.junit.Assert.assertFalse(requested)
+    }
 }

@@ -27,6 +27,9 @@
     <string name="empty_inspections_title">No inspections yet</string>
     <string name="empty_inspections_body">Create an inspection to start capturing field evidence. Your changes are saved on this device and sync automatically.</string>
     <string name="loading_inspections">Loading inspections…</string>
+    <string name="loading_inspection">Loading inspection…</string>
+    <string name="inspection_not_found_title">Inspection not found</string>
+    <string name="inspection_not_found_body">It may have been removed on this device.</string>
 
     <!-- Sync -->
     <string name="sync_online">Online</string>
@@ -69,6 +72,12 @@
     <string name="camera_error_title">Camera unavailable</string>
     <string name="camera_error_body">The camera could not be started: %1$s. Try again, or close and add a written note instead.</string>
     <string name="camera_capture_failed">Could not capture photo: %1$s</string>
+    <string name="camera_permission_title">Camera permission required</string>
+    <string name="camera_permission_body">FieldProof needs camera access to capture inspection evidence. You can grant it in Settings, or add a written note instead.</string>
+    <string name="camera_permission_denied_body">Camera access is turned off for FieldProof. Turn it on in Settings to capture photo evidence, or add a written note instead.</string>
+    <string name="action_allow_camera">Allow camera</string>
+    <string name="action_open_settings">Open settings</string>
+    <string name="action_not_now">Not now</string>
 
     <!-- Submission / review / report -->
     <string name="submit_title">Submission</string>

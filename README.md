@@ -254,7 +254,7 @@ including idempotent evidence upload and optimistic concurrency — is in
 | :--- | :--- | :--- |
 | 1 · Definition | User flow, data model, API contract, acceptance criteria | ✅ docs in `fieldproof-starter/docs/` |
 | 2 · Vertical slice | One complete offline workflow on synthetic fixtures | ✅ see `docs/demo.md` Steps 1-12 |
-| 3 · Reliability | Failure recovery, access checks, automated tests | 🟡 89 JVM + 42 instrumented tests; CI emulator lane |
+| 3 · Reliability | Failure recovery, access checks, automated tests | 🟡 93 JVM + 42 instrumented tests; CI emulator lane |
 | 4 · Demonstration | Repeatable demo, screenshots, documented limitations | ✅ `docs/demo.md`, `docs/screenshots/`, `docs/known-limitations.md` |
 | 5 · Handoff | Reproducible setup, build instructions, maintenance notes | 🟡 this README + `scripts/verify_clean_setup.sh` |
 

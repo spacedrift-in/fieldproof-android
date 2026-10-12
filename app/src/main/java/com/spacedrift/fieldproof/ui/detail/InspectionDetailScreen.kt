@@ -62,6 +62,7 @@ import com.spacedrift.fieldproof.ui.components.describeConflict
 import com.spacedrift.fieldproof.ui.components.EmptyState
 import com.spacedrift.fieldproof.ui.components.EvidenceCaptureCard
 import com.spacedrift.fieldproof.ui.components.EvidenceRow
+import com.spacedrift.fieldproof.ui.components.LoadingState
 import com.spacedrift.fieldproof.ui.components.SectionHeader
 import com.spacedrift.fieldproof.ui.components.StatusChip
 import com.spacedrift.fieldproof.ui.components.StatusTone
@@ -74,6 +75,8 @@ import com.spacedrift.fieldproof.ui.components.syncStatusLabel
 import com.spacedrift.fieldproof.ui.inspection.InspectionViewModel
 import com.spacedrift.fieldproof.ui.report.ReportPdfExporter
 import com.spacedrift.fieldproof.ui.theme.Dimens
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -84,46 +87,80 @@ fun InspectionDetailScreen(
     onBack: () -> Unit,
     onCaptureForItem: (String?, String?) -> Unit
 ) {
-    val inspections by viewModel.inspections.collectAsState()
-    val inspection = inspections.firstOrNull { it.id == inspectionId }
-
     LaunchedEffect(inspectionId) {
         viewModel.openInspection(inspectionId)
     }
 
-    if (inspection == null) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text(stringResource(R.string.inspection_heading)) },
-                    navigationIcon = {
-                        OutlinedIconButton(onClick = onBack) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = stringResource(R.string.action_back)
-                            )
-                        }
-                    }
+    val detailState by remember(inspectionId) {
+        viewModel.observeInspection(inspectionId).asDetailState()
+    }.collectAsState(initial = InspectionDetailState.Loading)
+
+    when (val state = detailState) {
+        InspectionDetailState.Loading -> {
+            InspectionChrome(onBack = onBack) { padding ->
+                LoadingState(
+                    label = stringResource(R.string.loading_inspection),
+                    modifier = Modifier.padding(padding)
                 )
             }
-        ) { padding ->
-            EmptyState(
-                icon = Icons.Outlined.Warning,
-                title = "Inspection not found",
-                body = "It may have been deleted on this device.",
-                modifier = Modifier.padding(padding)
-            )
+            return
         }
-        return
+
+        InspectionDetailState.NotFound -> {
+            InspectionChrome(onBack = onBack) { padding ->
+                EmptyState(
+                    icon = Icons.Outlined.Warning,
+                    title = stringResource(R.string.inspection_not_found_title),
+                    body = stringResource(R.string.inspection_not_found_body),
+                    modifier = Modifier.padding(padding)
+                )
+            }
+            return
+        }
+
+        is InspectionDetailState.Loaded -> DetailContent(
+            inspection = state.inspection,
+            inspectionId = inspectionId,
+            viewModel = viewModel,
+            onBack = onBack,
+            onCaptureForItem = onCaptureForItem
+        )
+    }
+}
+
+internal sealed interface InspectionDetailState {
+    data object Loading : InspectionDetailState
+    data object NotFound : InspectionDetailState
+    data class Loaded(val inspection: InspectionEntity) : InspectionDetailState
+}
+
+internal fun Flow<InspectionEntity?>.asDetailState(): Flow<InspectionDetailState> =
+    map { entity ->
+        if (entity == null) InspectionDetailState.NotFound
+        else InspectionDetailState.Loaded(entity)
     }
 
-    DetailContent(
-        inspection = inspection,
-        inspectionId = inspectionId,
-        viewModel = viewModel,
-        onBack = onBack,
-        onCaptureForItem = onCaptureForItem
-    )
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InspectionChrome(
+    onBack: () -> Unit,
+    content: @Composable (androidx.compose.foundation.layout.PaddingValues) -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.inspection_heading)) },
+                navigationIcon = {
+                    OutlinedIconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.action_back)
+                        )
+                    }
+                }
+            )
+        }
+    ) { padding -> content(padding) }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

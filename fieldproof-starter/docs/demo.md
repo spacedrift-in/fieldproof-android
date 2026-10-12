@@ -206,11 +206,11 @@ cd fieldproof-starter
 export DATABASE_URL="postgresql+psycopg://fieldproof:fieldproof@localhost:5432/fieldproof"
 .venv/bin/python -m pytest backend/tests -q
 
-# Android unit tests (52 tests; Robolectric 4.17)
+# Android unit tests (93 tests; Robolectric 4.17)
 cd ..
 ./gradlew :app:testDebugUnitTest
 
-# Android instrumented tests (25 tests; API-37 emulator)
+# Android instrumented tests (42 tests; API-37 emulator)
 ANDROID_SERIAL=emulator-5554 ./gradlew :app:connectedDebugAndroidTest
 ```
 

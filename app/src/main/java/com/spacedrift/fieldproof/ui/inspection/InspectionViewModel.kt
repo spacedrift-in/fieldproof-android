@@ -301,6 +301,12 @@ class InspectionViewModel @Inject constructor(
         return repository.observeChecklist(inspectionId)
     }
 
+    fun observeInspection(
+        inspectionId: String
+    ): Flow<InspectionEntity?> {
+        return repository.observeInspection(inspectionId)
+    }
+
     fun observeEvidence(
         inspectionId: String
     ): Flow<List<EvidenceEntity>> {

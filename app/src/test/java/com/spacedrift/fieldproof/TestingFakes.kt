@@ -221,6 +221,9 @@ class FakeInspectionDao : InspectionDao {
 
     override suspend fun getInspection(inspectionId: String): InspectionEntity? = store[inspectionId]
 
+    override fun observeInspection(inspectionId: String): Flow<InspectionEntity?> =
+        MutableStateFlow(store[inspectionId])
+
     override suspend fun deleteInspection(inspectionId: String) {
         store.remove(inspectionId)
     }

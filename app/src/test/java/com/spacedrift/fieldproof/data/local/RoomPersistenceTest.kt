@@ -203,6 +203,46 @@ class RoomPersistenceTest {
     }
 
     @Test
+    fun `evidence is linked to its checklist item and keeps its note`() = runBlocking {
+        db.inspectionDao().insertInspection(inspection())
+        db.checklistItemDao().insertChecklistItems(
+            listOf(checklistItem("c1"), checklistItem("c2"))
+        )
+        db.evidenceDao().insertEvidence(
+            EvidenceEntity(
+                id = "e1",
+                inspectionId = "i1",
+                checklistItemId = "c1",
+                type = "PHOTO",
+                localUri = "file:///photo-e1.jpg",
+                note = "Cracked panel near bay 3",
+                capturedAt = 2_000L,
+                syncStatus = "QUEUED"
+            )
+        )
+
+        val linked = db.evidenceDao().observeEvidence("i1").first().single()
+
+        assertEquals("c1", linked.checklistItemId)
+        assertEquals("Cracked panel near bay 3", linked.note)
+        assertEquals(
+            "i1",
+            db.checklistItemDao().observeChecklistItems("i1").first()
+                .first { it.id == "c1" }
+                .inspectionId
+        )
+    }
+
+    @Test
+    fun `observeInspection emits null for a missing row and the row when present`() = runBlocking {
+        assertNull(db.inspectionDao().observeInspection("missing").first())
+
+        db.inspectionDao().insertInspection(inspection(id = "i1", title = "Found"))
+
+        assertEquals("Found", db.inspectionDao().observeInspection("i1").first()!!.title)
+    }
+
+    @Test
     fun `deleteForInspection removes only that inspection's children`() = runBlocking {
         db.inspectionDao().insertInspection(inspection(id = "i1"))
         db.inspectionDao().insertInspection(inspection(id = "i2"))

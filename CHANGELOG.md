@@ -70,6 +70,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     carries a real close button, capture is guarded against double-taps, and
     decode/upload failures surface inline instead of failing silently
     (`CameraStateDeviceTest`).
+  - The inspection detail screen observes its inspection by id and shows a
+    loading state until the first database emission, so opening or deep-linking
+    never flashes *Inspection not found* (`InspectionDetailStateTest`).
+  - The camera permission screen re-checks the grant on `ON_RESUME` (granting it
+    in Settings recovers the flow without a relaunch) and, once the system
+    reports permanent denial, swaps *Allow camera* for an *Open settings* action
+    instead of a dead end; *Not now* still falls back to a written note
+    (`CameraPermissionDeviceTest`).
 
 ### Changed
 

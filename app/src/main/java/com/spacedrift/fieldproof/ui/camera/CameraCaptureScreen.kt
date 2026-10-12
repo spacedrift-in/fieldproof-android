@@ -1,12 +1,16 @@
 package com.spacedrift.fieldproof.ui.camera
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,6 +50,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -64,6 +69,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.spacedrift.fieldproof.R
 import java.io.File
@@ -108,24 +115,56 @@ fun CameraCaptureScreen(
         )
     }
 
+    val activity = remember(context) { context.findActivity() }
+    var permissionRequested by remember { mutableStateOf(false) }
+    var showRationale by remember { mutableStateOf(false) }
+
+    fun refreshPermission() {
+        hasCameraPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        showRationale =
+            activity?.shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) == true
+    }
+
     val permissionLauncher =
         rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { granted ->
+            permissionRequested = true
             hasCameraPermission = granted
+            showRationale =
+                activity?.shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) == true
         }
+
+    // Re-read the permission on every resume so granting it in Settings (or in
+    // the system dialog) recovers the flow immediately, without a relaunch.
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshPermission()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(Unit) {
         if (!hasCameraPermission) {
+            permissionRequested = true
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
     if (!hasCameraPermission) {
         CameraPermissionScreen(
+            permanentlyDenied = permissionRequested && !showRationale,
             onRequestPermission = {
+                permissionRequested = true
                 permissionLauncher.launch(Manifest.permission.CAMERA)
             },
+            onOpenSettings = { context.openAppSettings() },
             onClose = onClose
         )
         return
@@ -510,7 +549,9 @@ internal fun CameraErrorScreen(
 @Composable
 internal fun CameraPermissionScreen(
     onRequestPermission: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    permanentlyDenied: Boolean = false,
+    onOpenSettings: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -530,7 +571,7 @@ internal fun CameraPermissionScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         Text(
-            text = "Camera permission required",
+            text = stringResource(R.string.camera_permission_title),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold
         )
@@ -538,8 +579,13 @@ internal fun CameraPermissionScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "FieldProof needs camera access to capture inspection evidence. " +
-                "You can grant it in Settings, or add a written note instead.",
+            text = stringResource(
+                if (permanentlyDenied) {
+                    R.string.camera_permission_denied_body
+                } else {
+                    R.string.camera_permission_body
+                }
+            ),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -547,10 +593,18 @@ internal fun CameraPermissionScreen(
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(
-            onClick = onRequestPermission,
+            onClick = if (permanentlyDenied) onOpenSettings else onRequestPermission,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Allow camera")
+            Text(
+                stringResource(
+                    if (permanentlyDenied) {
+                        R.string.action_open_settings
+                    } else {
+                        R.string.action_allow_camera
+                    }
+                )
+            )
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -559,9 +613,26 @@ internal fun CameraPermissionScreen(
             onClick = onClose,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Not now")
+            Text(stringResource(R.string.action_not_now))
         }
     }
+}
+
+private fun Context.findActivity(): Activity? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return null
+}
+
+private fun Context.openAppSettings() {
+    val intent = Intent(
+        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        Uri.fromParts("package", packageName, null)
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    startActivity(intent)
 }
 
 private fun takePhoto(

@@ -32,6 +32,17 @@ class InspectionRepository @Inject constructor(
         return inspectionDao.getInspection(inspectionId)
     }
 
+    /**
+     * Observes a single inspection so the detail screen can distinguish
+     * *still loading* from *genuinely missing* instead of flashing a
+     * not-found state before the first database emission.
+     */
+    fun observeInspection(
+        inspectionId: String
+    ): Flow<InspectionEntity?> {
+        return inspectionDao.observeInspection(inspectionId)
+    }
+
     suspend fun createInspection(
         title: String,
         location: String
