@@ -90,7 +90,7 @@ read path.
 
 ```mermaid
 flowchart TD
-    UI["Compose UI<br/>(MainActivity, Camera)">
+    UI["Compose UI<br/>(MainActivity, Camera)"]
     VM["InspectionViewModel"]
     Repo["Repositories<br/>Inspection · Sync · Remote"]
     Room["Room database<br/>inspections · checklist_items · evidence · sync_operations"]
