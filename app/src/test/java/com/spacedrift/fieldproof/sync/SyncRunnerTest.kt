@@ -12,6 +12,7 @@ import com.spacedrift.fieldproof.data.remote.InspectionUploadResult
 import com.spacedrift.fieldproof.data.repository.SyncRepository
 import com.spacedrift.fieldproof.evidenceEntity
 import com.spacedrift.fieldproof.inspectionEntity
+import com.spacedrift.fieldproof.testConflict
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -189,7 +190,11 @@ class SyncRunnerTest {
     @Test
     fun `conflict keeps operation on conflict status`() = runBlocking {
         val uploader = FakeEvidenceUploader(
-            mutableListOf(EvidenceUploadResult.Conflict)
+            mutableListOf(
+                EvidenceUploadResult.Conflict(
+                    testConflict(message = "Idempotency-Key was already used with different evidence content.")
+                )
+            )
         )
         val evidence = evidenceEntity(id = "e1", inspectionId = "i1")
         queue(evidence)

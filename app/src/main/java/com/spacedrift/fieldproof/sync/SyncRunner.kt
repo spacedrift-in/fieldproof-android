@@ -32,6 +32,7 @@ class SyncRunner @Inject constructor(
         const val STATUS_SYNCED = "SYNCED"
         const val STATUS_FAILED = "FAILED"
         const val STATUS_CONFLICT = "CONFLICT"
+        const val STATUS_RESOLVED = "RESOLVED"
     }
 
     suspend fun run(): SyncRunResult {
@@ -128,7 +129,7 @@ class SyncRunner @Inject constructor(
             is InspectionUploadResult.Conflict -> {
                 syncRepository.markConflict(
                     operation = attempted,
-                    error = "Inspection already exists on the server with different attributes."
+                    conflict = result.serverConflict
                 )
                 Outcome.Finished
             }
@@ -239,7 +240,7 @@ class SyncRunner @Inject constructor(
             is EvidenceUploadResult.Conflict -> {
                 syncRepository.markConflict(
                     operation = attempted,
-                    error = "Idempotency key was reused with different content."
+                    conflict = result.serverConflict
                 )
                 evidenceDao.updateSyncStatus(
                     evidenceId = evidence.id,
@@ -267,7 +268,9 @@ class SyncRunner @Inject constructor(
         }
 
         return when (inspectionOperation.status) {
-            STATUS_SYNCED -> Gate.Ready
+            // RESOLVED means the user explicitly accepted/kept the server's
+            // inspection after a conflict, so evidence may proceed.
+            STATUS_SYNCED, STATUS_RESOLVED -> Gate.Ready
 
             STATUS_FAILED, STATUS_CONFLICT -> Gate.Failed(
                 "The inspection has not synced; retry the inspection before its evidence."

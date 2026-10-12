@@ -35,7 +35,9 @@ fun deriveSyncSummary(
                 synced = synced,
                 title = "Sync needs attention",
                 body = listOfNotNull(
-                    conflict.takeIf { it > 0 }?.let { "$it item conflict" },
+                    conflict.takeIf { it > 0 }?.let {
+                        "$it conflict(s) — open the inspection to resolve"
+                    },
                     failed.takeIf { it > 0 }?.let { "$it item failed" }
                 ).joinToString(" · ")
             )

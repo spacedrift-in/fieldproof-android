@@ -26,42 +26,61 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.spacedrift.fieldproof.R
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/**
+ * The camera's own lifecycle, independent of the navigation state. Modelled
+ * explicitly so the screen never shows a blank frame: it is either still
+ * spinning up, ready to shoot, or broken with a retry.
+ */
+private sealed interface CameraPhase {
+    data object Starting : CameraPhase
+    data object Ready : CameraPhase
+    data class Failed(val reason: String) : CameraPhase
+}
 
 @Composable
 fun CameraCaptureScreen(
@@ -75,6 +94,10 @@ fun CameraCaptureScreen(
 
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var capturedUri by remember { mutableStateOf<Uri?>(null) }
+    var cameraPhase by remember { mutableStateOf<CameraPhase>(CameraPhase.Starting) }
+    var bindAttempt by remember { mutableStateOf(0) }
+    var capturing by remember { mutableStateOf(false) }
+    var captureError by remember { mutableStateOf<String?>(null) }
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -117,92 +140,185 @@ fun CameraCaptureScreen(
         if (previewUri != null) {
             CapturedPreview(
                 uri = previewUri,
-                onRetake = { capturedUri = null },
-                onUse = { onPhotoCaptured(previewUri) }
+                onRetake = {
+                    capturedUri = null
+                    captureError = null
+                },
+                onUse = { onPhotoCaptured(previewUri) },
+                onClose = onClose
             )
         } else {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { viewContext ->
-                    val previewView = PreviewView(viewContext)
-                    val cameraProviderFuture =
-                        ProcessCameraProvider.getInstance(viewContext)
-
-                    cameraProviderFuture.addListener({
-                        val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder()
-                            .build()
-                            .also { it.surfaceProvider = previewView.surfaceProvider }
-
-                        val capture = ImageCapture.Builder()
-                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                            .build()
-
-                        imageCapture = capture
-
-                        try {
-                            cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                capture
-                            )
-                        } catch (exception: Exception) {
-                            Toast.makeText(
-                                viewContext,
-                                "Unable to start camera",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    }, ContextCompat.getMainExecutor(viewContext))
-
-                    previewView
-                }
-            )
-
-            CaptureHeader(
-                title = checklistItemTitle,
-                requiresPhoto = requiresPhoto,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(16.dp)
-            )
-
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = {
-                        imageCapture?.let { capture ->
-                            takePhoto(
-                                context = context,
-                                imageCapture = capture,
-                                onPhotoCaptured = { uri -> capturedUri = uri }
-                            )
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                ) {
-                    Icon(Icons.Outlined.PhotoCamera, contentDescription = null)
-                    Spacer(modifier = Modifier.padding(4.dp))
-                    Text("Capture photo")
+            when (val phase = cameraPhase) {
+                is CameraPhase.Failed -> {
+                    CameraErrorScreen(
+                        reason = phase.reason,
+                        onRetry = {
+                            cameraPhase = CameraPhase.Starting
+                            bindAttempt += 1
+                        },
+                        onClose = onClose
+                    )
                 }
 
-                OutlinedButton(
-                    onClick = onClose,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Cancel")
+                else -> {
+                    key(bindAttempt) {
+                        AndroidView(
+                            modifier = Modifier.fillMaxSize(),
+                            factory = { viewContext ->
+                                val previewView = PreviewView(viewContext)
+                                val cameraProviderFuture =
+                                    ProcessCameraProvider.getInstance(viewContext)
+
+                                cameraProviderFuture.addListener({
+                                    try {
+                                        val cameraProvider = cameraProviderFuture.get()
+                                        val preview = Preview.Builder()
+                                            .build()
+                                            .also {
+                                                it.surfaceProvider =
+                                                    previewView.surfaceProvider
+                                            }
+
+                                        val capture = ImageCapture.Builder()
+                                            .setCaptureMode(
+                                                ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
+                                            )
+                                            .build()
+
+                                        imageCapture = capture
+
+                                        cameraProvider.unbindAll()
+                                        cameraProvider.bindToLifecycle(
+                                            lifecycleOwner,
+                                            CameraSelector.DEFAULT_BACK_CAMERA,
+                                            preview,
+                                            capture
+                                        )
+                                        cameraPhase = CameraPhase.Ready
+                                    } catch (exception: Exception) {
+                                        cameraPhase = CameraPhase.Failed(
+                                            exception.message
+                                                ?: "The camera could not be started."
+                                        )
+                                    }
+                                }, ContextCompat.getMainExecutor(viewContext))
+
+                                previewView
+                            }
+                        )
+                    }
+
+                    CaptureHeader(
+                        title = checklistItemTitle,
+                        requiresPhoto = requiresPhoto,
+                        onClose = onClose,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .statusBarsPadding()
+                            .padding(16.dp)
+                    )
+
+                    if (cameraPhase is CameraPhase.Starting) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.45f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .testTag("camera_starting"),
+                                color = Color.White
+                            )
+                        }
+                    }
+
+                    CaptureControls(
+                        capturing = capturing,
+                        enabled = cameraPhase is CameraPhase.Ready && !capturing,
+                        error = captureError,
+                        onCapture = {
+                            val capture = imageCapture
+                            if (capture != null) {
+                                capturing = true
+                                captureError = null
+                                takePhoto(
+                                    context = context,
+                                    imageCapture = capture,
+                                    onCaptured = { uri ->
+                                        capturing = false
+                                        capturedUri = uri
+                                    },
+                                    onError = { message ->
+                                        capturing = false
+                                        captureError = message
+                                    }
+                                )
+                            }
+                        },
+                        onClose = onClose,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CaptureControls(
+    capturing: Boolean,
+    enabled: Boolean,
+    error: String?,
+    onCapture: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        error?.let { message ->
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+
+        Button(
+            onClick = onCapture,
+            enabled = enabled,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+        ) {
+            if (capturing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.size(8.dp))
+                Text("Capturing…")
+            } else {
+                Icon(Icons.Outlined.PhotoCamera, contentDescription = null)
+                Spacer(modifier = Modifier.size(8.dp))
+                Text("Capture photo")
+            }
+        }
+
+        OutlinedButton(
+            onClick = onClose,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Cancel")
         }
     }
 }
@@ -211,7 +327,8 @@ fun CameraCaptureScreen(
 internal fun CapturedPreview(
     uri: Uri,
     onRetake: () -> Unit,
-    onUse: () -> Unit
+    onUse: () -> Unit,
+    onClose: () -> Unit
 ) {
     val bitmap = remember(uri) { decodeForPreview(uri) }
 
@@ -228,41 +345,52 @@ internal fun CapturedPreview(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Photo captured", color = Color.White)
+                Text(
+                    text = stringResource(R.string.photo_preview_unavailable),
+                    color = Color.White
+                )
             }
         }
 
         CaptureHeader(
-            title = "Review photo",
+            title = stringResource(R.string.review_photo),
             requiresPhoto = false,
+            onClose = onClose,
             modifier = Modifier
                 .align(Alignment.TopCenter)
+                .statusBarsPadding()
                 .padding(16.dp)
         )
 
-        Row(
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .padding(24.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            OutlinedButton(
-                onClick = onRetake,
-                modifier = Modifier.weight(1f)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(Icons.Outlined.Refresh, contentDescription = null)
-                Spacer(modifier = Modifier.padding(4.dp))
-                Text("Retake")
-            }
+                OutlinedButton(
+                    onClick = onRetake,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = null)
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text(stringResource(R.string.action_retake))
+                }
 
-            Button(
-                onClick = onUse,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Outlined.Check, contentDescription = null)
-                Spacer(modifier = Modifier.padding(4.dp))
-                Text("Use photo")
+                Button(
+                    onClick = onUse,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Outlined.Check, contentDescription = null)
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text(stringResource(R.string.action_use_photo))
+                }
             }
         }
     }
@@ -272,6 +400,7 @@ internal fun CapturedPreview(
 internal fun CaptureHeader(
     title: String?,
     requiresPhoto: Boolean,
+    onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -283,7 +412,7 @@ internal fun CaptureHeader(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .padding(start = 14.dp, top = 6.dp, bottom = 6.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -291,7 +420,7 @@ internal fun CaptureHeader(
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary
             )
-            Spacer(modifier = Modifier.padding(6.dp))
+            Spacer(modifier = Modifier.size(6.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "CAPTURE EVIDENCE",
@@ -310,11 +439,70 @@ internal fun CaptureHeader(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Icon(
-                imageVector = Icons.Filled.Close,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            IconButton(onClick = onClose) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.action_close),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun CameraErrorScreen(
+    reason: String,
+    onRetry: () -> Unit,
+    onClose: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Warning,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.error
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Text(
+            text = stringResource(R.string.camera_error_title),
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = stringResource(R.string.camera_error_body, reason),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Button(
+            onClick = onRetry,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(stringResource(R.string.action_try_again))
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedButton(
+            onClick = onClose,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(stringResource(R.string.action_close))
         }
     }
 }
@@ -327,6 +515,8 @@ internal fun CameraPermissionScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -377,7 +567,8 @@ internal fun CameraPermissionScreen(
 private fun takePhoto(
     context: Context,
     imageCapture: ImageCapture,
-    onPhotoCaptured: (Uri) -> Unit
+    onCaptured: (Uri) -> Unit,
+    onError: (String) -> Unit
 ) {
     val directory = File(
         context.getExternalFilesDir(Environment.DIRECTORY_PICTURES),
@@ -402,7 +593,7 @@ private fun takePhoto(
             override fun onImageSaved(
                 outputFileResults: ImageCapture.OutputFileResults
             ) {
-                onPhotoCaptured(Uri.fromFile(photoFile))
+                onCaptured(Uri.fromFile(photoFile))
             }
 
             override fun onError(exception: ImageCaptureException) {
@@ -411,6 +602,12 @@ private fun takePhoto(
                     "Photo capture failed: ${exception.message}",
                     Toast.LENGTH_LONG
                 ).show()
+                onError(
+                    context.getString(
+                        R.string.camera_capture_failed,
+                        exception.message ?: "unknown error"
+                    )
+                )
             }
         }
     )

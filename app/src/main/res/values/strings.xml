@@ -17,6 +17,7 @@
     <string name="action_create">Create</string>
     <string name="action_back">Back</string>
     <string name="action_retry_sync">Retry sync</string>
+    <string name="action_retry">Retry</string>
     <string name="action_open">Open</string>
     <string name="action_close">Close</string>
     <string name="action_take_photo">Take photo</string>
@@ -46,6 +47,7 @@
     <string name="optional_label">Optional</string>
     <string name="photo_attached">Photo attached</string>
     <string name="evidence_missing">Evidence missing</string>
+    <string name="server_evidence_missing">Server requires evidence</string>
     <string name="evidence_photo_desc">Evidence photo</string>
     <string name="action_open_inspection">Open inspection</string>
     <string name="action_view_photo">View larger photo</string>
@@ -57,6 +59,16 @@
     <string name="evidence_note_placeholder">Describe what you observed</string>
     <string name="required_checklist_progress">%1$d of %2$d required items complete</string>
     <string name="evidence_count">%1$d evidence</string>
+
+    <!-- Camera capture -->
+    <string name="action_retake">Retake</string>
+    <string name="action_use_photo">Use photo</string>
+    <string name="action_try_again">Try again</string>
+    <string name="review_photo">Review photo</string>
+    <string name="photo_preview_unavailable">Photo preview unavailable</string>
+    <string name="camera_error_title">Camera unavailable</string>
+    <string name="camera_error_body">The camera could not be started: %1$s. Try again, or close and add a written note instead.</string>
+    <string name="camera_capture_failed">Could not capture photo: %1$s</string>
 
     <!-- Submission / review / report -->
     <string name="submit_title">Submission</string>

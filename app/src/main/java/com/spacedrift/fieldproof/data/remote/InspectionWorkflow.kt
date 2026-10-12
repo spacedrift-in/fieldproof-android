@@ -1,5 +1,7 @@
 package com.spacedrift.fieldproof.data.remote
 
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
+
 // ---------------------------------------------------------------------------
 // Server DTOs (Gson maps by exact field name; the API uses snake_case).
 // ---------------------------------------------------------------------------
@@ -111,7 +113,11 @@ data class RemoteReport(
 sealed interface WorkflowResult<out T> {
     data class Success<T>(val value: T) : WorkflowResult<T>
 
-    data class Conflict(val message: String) : WorkflowResult<Nothing>
+    data class Conflict(
+        val serverConflict: ServerConflict
+    ) : WorkflowResult<Nothing> {
+        val message: String get() = serverConflict.message
+    }
 
     data class Failed(
         val message: String,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from io import BytesIO
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -26,6 +27,15 @@ def _utc_label(value: datetime) -> str:
 
 def _status_label(status: str) -> str:
     return status.replace("_", " ").title()
+
+
+def _esc(value: object) -> str:
+    """Escape user-authored text so it is safe inside a ReportLab paragraph.
+
+    Values like ``R&D`` or ``<valve>`` are valid inspection content but would
+    otherwise be parsed as XML markup and abort PDF generation.
+    """
+    return escape(str(value))
 
 
 def render_report_pdf(payload: ReportResponse) -> bytes:
@@ -81,8 +91,8 @@ def render_report_pdf(payload: ReportResponse) -> bytes:
         )
     )
 
-    story.append(Paragraph(payload.title, heading_style))
-    story.append(Paragraph(f"Location: {payload.location}", body_style))
+    story.append(Paragraph(_esc(payload.title), heading_style))
+    story.append(Paragraph(f"Location: {_esc(payload.location)}", body_style))
     story.append(
         Paragraph(
             f"Inspection ID: {payload.inspection_id}",
@@ -107,8 +117,8 @@ def render_report_pdf(payload: ReportResponse) -> bytes:
         review = payload.review
         story.append(
             Paragraph(
-                f"Reviewer: {review.reviewer_id} · "
-                f"Decision: {review.decision.replace('_', ' ').title()} · "
+                f"Reviewer: {_esc(review.reviewer_id)} · "
+                f"Decision: {_esc(review.decision.replace('_', ' ').title())} · "
                 f"Reviewed: {_utc_label(review.reviewed_at)} · "
                 f"Snapshot version {review.inspection_version}",
                 body_style,
@@ -116,7 +126,9 @@ def render_report_pdf(payload: ReportResponse) -> bytes:
         )
         if review.comment:
             story.append(
-                Paragraph(f"Reviewer comment: {review.comment}", body_style)
+                Paragraph(
+                    f"Reviewer comment: {_esc(review.comment)}", body_style
+                )
             )
 
     story.append(Paragraph("Summary", heading_style))
@@ -148,10 +160,10 @@ def render_report_pdf(payload: ReportResponse) -> bytes:
         ] or ["—"]
         rows.append(
             [
-                Paragraph(item.label, body_style),
-                Paragraph(_status_label(item.status), body_style),
+                Paragraph(_esc(item.label), body_style),
+                Paragraph(_esc(_status_label(item.status)), body_style),
                 Paragraph(", ".join(evidence_kinds), body_style),
-                Paragraph(item.note or "—", body_style),
+                Paragraph(_esc(item.note) if item.note else "—", body_style),
             ]
         )
 
@@ -190,7 +202,11 @@ def render_report_pdf(payload: ReportResponse) -> bytes:
 
 
 def _evidence_label(evidence) -> str:
+    short_id = str(evidence.id)[:8]
     kind = evidence.kind
     if kind == "note" and evidence.note:
-        return f"note ({evidence.note[:60]}{'…' if len(evidence.note) > 60 else ''})"
-    return kind
+        snippet = evidence.note[:60]
+        if len(evidence.note) > 60:
+            snippet += "…"
+        return f"note {short_id} ({_esc(snippet)})"
+    return f"{kind} {short_id}"

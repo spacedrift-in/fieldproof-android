@@ -65,6 +65,23 @@ interface SyncOperationDao {
     @Query(
         """
         UPDATE sync_operations
+        SET status = 'CONFLICT',
+            lastError = :error,
+            conflictDetail = :conflictDetail,
+            updatedAt = :updatedAt
+        WHERE id = :operationId
+        """
+    )
+    suspend fun markConflict(
+        operationId: String,
+        error: String?,
+        conflictDetail: String?,
+        updatedAt: Long
+    )
+
+    @Query(
+        """
+        UPDATE sync_operations
         SET status = 'QUEUED',
             updatedAt = :updatedAt
         WHERE status = 'UPLOADING'
@@ -87,6 +104,37 @@ interface SyncOperationDao {
         """
     )
     suspend fun requeueFailed(
+        updatedAt: Long
+    )
+
+    @Query(
+        """
+        UPDATE sync_operations
+        SET status = 'QUEUED',
+            attempts = 0,
+            lastError = NULL,
+            conflictDetail = NULL,
+            updatedAt = :updatedAt
+        WHERE id = :operationId
+        """
+    )
+    suspend fun requeueOperation(
+        operationId: String,
+        updatedAt: Long
+    )
+
+    @Query(
+        """
+        UPDATE sync_operations
+        SET status = 'RESOLVED',
+            lastError = NULL,
+            conflictDetail = NULL,
+            updatedAt = :updatedAt
+        WHERE id = :operationId
+        """
+    )
+    suspend fun markResolved(
+        operationId: String,
         updatedAt: Long
     )
 

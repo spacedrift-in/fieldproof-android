@@ -12,6 +12,14 @@ import com.spacedrift.fieldproof.data.remote.EvidenceUploadResult
 import com.spacedrift.fieldproof.data.remote.EvidenceUploader
 import com.spacedrift.fieldproof.data.remote.InspectionUploadResult
 import com.spacedrift.fieldproof.data.remote.InspectionUploader
+import com.spacedrift.fieldproof.data.remote.InspectionWorkflowClient
+import com.spacedrift.fieldproof.data.remote.RemoteInspection
+import com.spacedrift.fieldproof.data.remote.RemoteReport
+import com.spacedrift.fieldproof.data.remote.RemoteReviewResponse
+import com.spacedrift.fieldproof.data.remote.RemoteSubmitResponse
+import com.spacedrift.fieldproof.data.remote.WorkflowResult
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
+import com.spacedrift.fieldproof.sync.SyncScheduler
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -80,6 +88,45 @@ class FakeSyncOperationDao : SyncOperationDao {
         update()
     }
 
+    override suspend fun requeueOperation(operationId: String, updatedAt: Long) {
+        val current = store[operationId] ?: return
+        store[operationId] = current.copy(
+            status = "QUEUED",
+            attempts = 0,
+            lastError = null,
+            conflictDetail = null,
+            updatedAt = updatedAt
+        )
+        update()
+    }
+
+    override suspend fun markResolved(operationId: String, updatedAt: Long) {
+        val current = store[operationId] ?: return
+        store[operationId] = current.copy(
+            status = "RESOLVED",
+            lastError = null,
+            conflictDetail = null,
+            updatedAt = updatedAt
+        )
+        update()
+    }
+
+    override suspend fun markConflict(
+        operationId: String,
+        error: String?,
+        conflictDetail: String?,
+        updatedAt: Long
+    ) {
+        val current = store[operationId] ?: return
+        store[operationId] = current.copy(
+            status = "CONFLICT",
+            lastError = error,
+            conflictDetail = conflictDetail,
+            updatedAt = updatedAt
+        )
+        update()
+    }
+
     override suspend fun getInspectionOperation(
         inspectionId: String
     ): SyncOperationEntity? {
@@ -132,7 +179,13 @@ class FakeEvidenceDao : EvidenceDao {
         toRemove.forEach { store.remove(it) }
     }
 
+    override suspend fun deleteEvidence(evidenceId: String) {
+        store.remove(evidenceId)
+    }
+
     fun get(id: String): EvidenceEntity? = store[id]
+
+    fun snapshot(): List<EvidenceEntity> = store.values.toList()
 }
 
 class FakeInspectionDao : InspectionDao {
@@ -223,6 +276,23 @@ class FakeInspectionUploader(
     }
 }
 
+class FakeSyncScheduler : SyncScheduler {
+
+    var enqueued = 0
+        private set
+
+    var forcedRetries = 0
+        private set
+
+    override fun enqueueSync() {
+        enqueued += 1
+    }
+
+    override fun forceRetry() {
+        forcedRetries += 1
+    }
+}
+
 fun inspectionEntity(
     id: String = "inspection-1",
     title: String = "Facility A",
@@ -237,6 +307,82 @@ fun inspectionEntity(
     status = status,
     createdAt = createdAt,
     updatedAt = updatedAt
+)
+
+fun testConflict(
+    message: String = "conflict",
+    rawDetail: String = """{"detail":"$message"}"""
+): ServerConflict = ServerConflict.Rejected(message, rawDetail)
+
+fun missingEvidenceConflict(
+    message: String = "Required evidence is missing.",
+    missingIds: List<String>
+): ServerConflict = ServerConflict.MissingRequiredEvidence(
+    message = message,
+    missingChecklistItemIds = missingIds,
+    rawDetail = """{"detail":{"message":"$message","missing_checklist_item_ids":""" +
+        missingIds.joinToString(prefix = "[", postfix = "]", transform = { "\"$it\"" }) +
+        "}}"
+)
+
+class FakeInspectionWorkflowClient(
+    var inspection: WorkflowResult<RemoteInspection> =
+        WorkflowResult.Success(remoteInspection()),
+    var submitResult: WorkflowResult<RemoteSubmitResponse> =
+        WorkflowResult.Success(RemoteSubmitResponse(id = "inspection-1", status = "SUBMITTED", version = 2)),
+    var reviewResult: WorkflowResult<RemoteReviewResponse>? = null,
+    var reportResult: WorkflowResult<RemoteReport>? = null
+) : InspectionWorkflowClient {
+
+    val submits = mutableListOf<Pair<String, Int?>>()
+
+    override suspend fun getInspection(
+        inspectionId: String
+    ): WorkflowResult<RemoteInspection> = inspection
+
+    override suspend fun submitInspection(
+        inspectionId: String,
+        expectedVersion: Int?
+    ): WorkflowResult<RemoteSubmitResponse> {
+        submits.add(inspectionId to expectedVersion)
+        return submitResult
+    }
+
+    override suspend fun reviewInspection(
+        inspectionId: String,
+        decision: String,
+        comment: String?,
+        reviewerId: String,
+        expectedVersion: Int?
+    ): WorkflowResult<RemoteReviewResponse> {
+        return reviewResult ?: WorkflowResult.Failed("no review configured", retryable = false)
+    }
+
+    override suspend fun getReport(
+        inspectionId: String
+    ): WorkflowResult<RemoteReport> {
+        return reportResult ?: WorkflowResult.Failed("no report configured", retryable = false)
+    }
+
+    override suspend fun downloadReportPdf(
+        inspectionId: String
+    ): WorkflowResult<ByteArray> {
+        return WorkflowResult.Failed("no report configured", retryable = false)
+    }
+}
+
+fun remoteInspection(
+    id: String = "inspection-1",
+    status: String = "DRAFT",
+    version: Int = 1
+) = RemoteInspection(
+    id = id,
+    title = "Facility A",
+    location = "Building 1",
+    status = status,
+    version = version,
+    created_at = "2026-01-01T00:00:00Z",
+    updated_at = "2026-01-01T00:00:00Z"
 )
 
 fun evidenceEntity(

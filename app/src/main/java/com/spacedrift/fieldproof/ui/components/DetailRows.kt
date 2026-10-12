@@ -104,7 +104,8 @@ fun ChecklistItemRow(
     hasSyncedPhoto: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     onAddEvidence: (() -> Unit)?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    serverMissingEvidence: Boolean = false
 ) {
     val statusColors = LocalStatusColors.current
     val open = statusTone("FAILED")
@@ -180,6 +181,24 @@ fun ChecklistItemRow(
                             text = stringResource(R.string.evidence_missing),
                             style = MaterialTheme.typography.labelMedium,
                             color = statusColors.warning
+                        )
+                    }
+                }
+
+                if (serverMissingEvidence) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.Warning,
+                            contentDescription = null,
+                            tint = statusColors.error,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = stringResource(R.string.server_evidence_missing),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = statusColors.error
                         )
                     }
                 }
@@ -304,7 +323,8 @@ fun EvidenceCaptureCard(
 fun EvidenceRow(
     evidence: EvidenceEntity,
     checklistTitle: String?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onRetry: (() -> Unit)? = null
 ) {
     val statusColors = LocalStatusColors.current
     var showViewer by remember { mutableStateOf(false) }
@@ -391,17 +411,44 @@ fun EvidenceRow(
                     )
                 }
 
-                if (evidence.syncStatus == "FAILED" || evidence.syncStatus == "CONFLICT") {
+                if (evidence.syncStatus == "FAILED" ||
+                    evidence.syncStatus == "CONFLICT" ||
+                    evidence.syncStatus == "SUPERSEDED"
+                ) {
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = if (evidence.syncStatus == "CONFLICT") {
-                            "Conflicted on the server. Review the inspection state."
-                        } else {
-                            "Upload failed. Tap Retry sync to try again."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = statusColors.error
-                    )
+                    if (evidence.syncStatus == "FAILED" && onRetry != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Upload failed.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = statusColors.error,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = onRetry) {
+                                Text(stringResource(R.string.action_retry))
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = when (evidence.syncStatus) {
+                                "CONFLICT" ->
+                                    "Conflicted on the server. Resolve it below — " +
+                                        "your local copy is kept."
+                                "SUPERSEDED" ->
+                                    "Superseded by the server copy you chose to keep."
+                                else -> "Upload failed. Tap Retry sync to try again."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (evidence.syncStatus == "SUPERSEDED") {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                statusColors.error
+                            }
+                        )
+                    }
                 }
             }
         }

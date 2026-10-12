@@ -1,67 +1,25 @@
 package com.spacedrift.fieldproof.sync
 
-import android.content.Context
-import androidx.work.BackoffPolicy
-import androidx.work.Constraints
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
-import dagger.hilt.android.qualifiers.ApplicationContext
-import java.util.concurrent.TimeUnit
-import javax.inject.Inject
-import javax.inject.Singleton
+/**
+ * Schedules the background sync pass that uploads locally queued operations
+ * (inspections first, then their evidence).
+ *
+ * Implementations must enqueue *unique* work so repeated triggers (app start,
+ * each newly queued operation, manual retry) collapse into one work chain rather
+ * than piling up parallel syncs.
+ */
+interface SyncScheduler {
 
-@Singleton
-class SyncScheduler @Inject constructor(
-    @ApplicationContext private val context: Context
-) {
+    /**
+     * Enqueues the next sync pass. Safe to call whenever a new operation is
+     * queued: if a sync is already pending it appends after it, and if one
+     * finished it starts a fresh pass, so the newly queued work is never lost.
+     */
+    fun enqueueSync()
 
-    fun enqueueSync() {
-        val request = OneTimeWorkRequestBuilder<SyncWorker>()
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-            )
-            .setBackoffCriteria(
-                BackoffPolicy.EXPONENTIAL,
-                30,
-                TimeUnit.SECONDS
-            )
-            .build()
-
-        WorkManager.getInstance(context)
-            .enqueueUniqueWork(
-                WORK_NAME,
-                ExistingWorkPolicy.KEEP,
-                request
-            )
-    }
-
-    fun forceRetry() {
-        val request = OneTimeWorkRequestBuilder<SyncWorker>()
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-            )
-            .setBackoffCriteria(
-                BackoffPolicy.EXPONENTIAL,
-                30,
-                TimeUnit.SECONDS
-            )
-            .build()
-
-        WorkManager.getInstance(context)
-            .enqueueUniqueWork(
-                WORK_NAME,
-                ExistingWorkPolicy.REPLACE,
-                request
-            )
-    }
-
-    private companion object {
-        const val WORK_NAME = "fieldproof-sync"
-    }
+    /**
+     * Replaces any pending sync with a fresh pass. Used by explicit user retries
+     * so a stuck/backing-off worker is superseded immediately.
+     */
+    fun forceRetry()
 }

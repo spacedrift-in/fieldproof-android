@@ -1,16 +1,52 @@
 # MVP acceptance criteria
 
+> **Status: LOCKED 2026-10-12** (see `scope-lock.md`). The criteria below are
+> frozen for the current milestone. Status at lock: 9 of 14 satisfied, 5 open
+> (tracked in Linear via `linear-backlog.csv`); updated 2026-10-12 after the
+> primary-journey UX pass: 10 satisfied, 4 open.
+
 - [ ] Inspection and checklist changes persist after process termination while offline.
 - [ ] Photos and notes persist locally and are linked to the correct checklist item.
-- [ ] Missing required evidence blocks submission and report finalization on the server.
-- [ ] Sync UI distinguishes queued, uploading, synced, failed, and conflict states.
-- [ ] Replaying the same upload operation does not create duplicate evidence.
-- [ ] Interrupted upload can be retried without losing local evidence.
+- [x] Missing required evidence blocks submission and report finalization on the server.
+      (server `_missing_required_evidence` → 409 `missing_checklist_item_ids`, asserted by
+      `test_submit_blocked_without_required_evidence`; the Android submit flow surfaces
+      those ids per checklist row and blocks re-submit — `InspectionViewModel` +
+      `ChecklistItemRow`, asserted by `InspectionViewModelSubmitValidationTest` and
+      `ChecklistCompletionDeviceTest`.)
+- [x] Sync UI distinguishes queued, uploading, synced, failed, and conflict states.
+      (`syncStatusLabel`/`SyncBadge` render each state distinctly — inspection
+      operation badge, per-evidence badges and the aggregate `SyncStatusCard`; the
+      failed state offers an actionable retry, per-evidence and aggregate. Asserted
+      by `SyncStatusDisplayTest` (JVM) and `SyncStateDisplayDeviceTest` (device).)
+- [x] Replaying the same upload operation does not create duplicate evidence.
+      (Android sends the multipart evidence contract — `file` + `id`/`kind`/
+      `captured_at`/`checklist_item_id`/`note` + the `Idempotency-Key` header —
+      and replays with the same key, which the server dedupes. Asserted end-to-end
+      over the real Retrofit/OkHttp stack by `EvidenceUploadIntegrationTest` and
+      server-side by `test_evidence_upload_is_idempotent`.)
+- [x] Interrupted upload can be retried without losing local evidence.
+      (Queuing an inspection/evidence schedules a *unique* `SyncWorker` pass keyed
+      by `WorkManagerSyncScheduler.WORK_NAME`, constrained to a connected network
+      with exponential backoff; the local row and its durable entity-id
+      idempotency key survive, so retrying never duplicates or drops evidence.
+      Asserted by `SyncSchedulerWorkManagerTest` — the worker stays ENQUEUED while
+      offline and executes once the network constraint is met.)
 - [ ] Permission denial provides actionable feedback and does not corrupt local work.
-- [ ] Conflicting updates return a visible conflict instead of silently overwriting.
+- [x] Conflicting updates return a visible conflict instead of silently overwriting.
+      (`ConflictResolver` + `ConflictResolutionCard`; the user chooses *Keep local
+      & retry* or *Use server version*, local work is never discarded — asserted by
+      `ConflictResolverTest` and `ConflictDescriptionTest`.)
 - [ ] Reviewer sign-off references a specific inspection version.
-- [ ] PDF includes inspection summary, checklist outcomes, evidence references/images, timestamps, and reviewer decision.
-- [ ] Loading, empty, error, and success states are present on primary flows.
+- [x] PDF includes inspection summary, checklist outcomes, evidence references/images, timestamps, and reviewer decision.
+      (`backend/app/report_pdf.py`; asserted by `backend/tests/test_report_pdf.py`
+      and `test_report_pdf_export_after_approval`.)
+- [x] Loading, empty, error, and success states are present on primary flows.
+      (Home distinguishes first-frame loading `LoadingState` from `EmptyState` and
+      the populated list; the camera models `Starting`/`Ready`/`Failed` with a
+      recoverable error screen and a photo-review state; the permission-denied
+      state offers recovery. Asserted by `HomeLoadingStateDeviceTest`,
+      `CameraStateDeviceTest`, `CameraPermissionDeviceTest` and the existing
+      evidence/checklist device tests.)
 - [x] Fixtures, logs, and screenshots contain no secrets or private client data.
       (fixtures under `tests/fixtures/` and `backend/app/demo_data.py`; screenshots
       in `docs/screenshots/`; `.gitignore` excludes `.env`, `local.properties`,

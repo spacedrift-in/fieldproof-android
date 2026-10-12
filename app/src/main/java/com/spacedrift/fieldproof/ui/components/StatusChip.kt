@@ -53,6 +53,7 @@ fun statusTone(status: String): StatusTone {
         "SUBMITTED", "IN REVIEW", "QUEUED", "UPLOADING", "SYNCING", "PENDING" -> StatusTone.WARNING
         "FAILED", "CONFLICT" -> StatusTone.ERROR
         "OFFLINE" -> StatusTone.OFFLINE
+        "RESOLVED", "SUPERSEDED" -> StatusTone.NEUTRAL
         else -> StatusTone.NEUTRAL
     }
 }
@@ -60,7 +61,8 @@ fun statusTone(status: String): StatusTone {
 fun statusIcon(status: String): ImageVector {
     return when (status.uppercase()) {
         "APPROVED", "SYNCED", "READY", "SYNC COMPLETE" -> Icons.Outlined.CloudDone
-        "SUBMITTED", "IN REVIEW", "QUEUED", "SYNCING", "PENDING" -> Icons.Outlined.CloudSync
+        "SUBMITTED", "IN REVIEW", "UPLOADING", "SYNCING" -> Icons.Outlined.CloudSync
+        "QUEUED", "PENDING" -> Icons.Outlined.CloudQueue
         "FAILED" -> Icons.Outlined.SyncProblem
         "CONFLICT" -> Icons.Outlined.ErrorOutline
         "OFFLINE" -> Icons.Outlined.CloudOff
@@ -72,10 +74,12 @@ fun statusIcon(status: String): ImageVector {
 fun syncStatusLabel(status: String): String {
     return when (status) {
         "QUEUED" -> "Queued"
-        "UPLOADING" -> "Syncing"
+        "UPLOADING" -> "Uploading"
         "SYNCED" -> "Synced"
         "FAILED" -> "Failed"
         "CONFLICT" -> "Conflict"
+        "RESOLVED" -> "Resolved"
+        "SUPERSEDED" -> "Superseded"
         else -> status
     }
 }

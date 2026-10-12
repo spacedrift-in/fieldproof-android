@@ -43,10 +43,13 @@ class FakeFieldProofApi : FieldProofApi {
         )
     }
 
+    var createException: Exception? = null
+
     override suspend fun createInspection(
         request: CreateInspectionRequest,
         idempotencyKey: String
     ): CreateInspectionResponse {
+        createException?.let { throw it }
         return CreateInspectionResponse(
             id = request.id,
             status = "DRAFT"
@@ -171,8 +174,10 @@ fun readPartValues(parts: List<MultipartBody.Part>): List<Pair<String, String>> 
     }
 }
 
-fun httpException(code: Int): HttpException {
-    val jsonBody = """{"detail":"error"}"""
+fun httpException(
+    code: Int,
+    jsonBody: String = """{"detail":"error"}"""
+): HttpException {
     val body = jsonBody.toResponseBody("application/json".toMediaType())
     val response = Response.error<UploadEvidenceResponse>(code, body)
     return HttpException(response)

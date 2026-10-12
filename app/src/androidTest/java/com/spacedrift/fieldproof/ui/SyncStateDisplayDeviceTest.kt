@@ -6,9 +6,12 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionSummaryEntity
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
+import com.spacedrift.fieldproof.ui.components.EvidenceRow
 import com.spacedrift.fieldproof.ui.components.InspectionCard
+import com.spacedrift.fieldproof.ui.components.SyncBadge
 import com.spacedrift.fieldproof.ui.components.SyncStatusCard
 import com.spacedrift.fieldproof.ui.components.SyncStatusPill
 import com.spacedrift.fieldproof.ui.components.deriveSyncSummary
@@ -174,5 +177,91 @@ class SyncStateDisplayDeviceTest {
         composeRule.onNodeWithText("Facility A").performClick()
 
         org.junit.Assert.assertEquals("i1", openedId)
+    }
+
+    @Test
+    fun queuedBadge_showsQueued() {
+        composeRule.setContent {
+            FieldProofTheme {
+                SyncBadge(status = "QUEUED")
+            }
+        }
+
+        composeRule.onNodeWithText("Queued").assertIsDisplayed()
+    }
+
+    @Test
+    fun uploadingBadge_showsUploading() {
+        composeRule.setContent {
+            FieldProofTheme {
+                SyncBadge(status = "UPLOADING")
+            }
+        }
+
+        composeRule.onNodeWithText("Uploading").assertIsDisplayed()
+    }
+
+    @Test
+    fun conflictBadge_showsConflict() {
+        composeRule.setContent {
+            FieldProofTheme {
+                SyncBadge(status = "CONFLICT")
+            }
+        }
+
+        composeRule.onNodeWithText("Conflict").assertIsDisplayed()
+    }
+
+    @Test
+    fun failedEvidence_offersRetryActionThatFires() {
+        var retried = false
+        composeRule.setContent {
+            FieldProofTheme {
+                EvidenceRow(
+                    evidence = EvidenceEntity(
+                        id = "ev1",
+                        inspectionId = "i1",
+                        checklistItemId = null,
+                        type = "NOTE",
+                        localUri = null,
+                        note = "Observed a loose railing.",
+                        capturedAt = 1_000L,
+                        syncStatus = "FAILED"
+                    ),
+                    checklistTitle = null,
+                    onRetry = { retried = true }
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Failed").assertIsDisplayed()
+        composeRule.onNodeWithText("Retry").performClick()
+
+        assertTrue(retried)
+    }
+
+    @Test
+    fun queuedEvidence_offersNoRetryAction() {
+        composeRule.setContent {
+            FieldProofTheme {
+                EvidenceRow(
+                    evidence = EvidenceEntity(
+                        id = "ev1",
+                        inspectionId = "i1",
+                        checklistItemId = null,
+                        type = "NOTE",
+                        localUri = null,
+                        note = "Queued note.",
+                        capturedAt = 1_000L,
+                        syncStatus = "QUEUED"
+                    ),
+                    checklistTitle = null,
+                    onRetry = { }
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Queued").assertIsDisplayed()
+        composeRule.onNodeWithText("Retry").assertDoesNotExist()
     }
 }

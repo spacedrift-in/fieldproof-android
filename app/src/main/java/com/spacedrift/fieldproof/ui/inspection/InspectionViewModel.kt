@@ -11,8 +11,10 @@ import com.spacedrift.fieldproof.data.local.SyncOperationEntity
 import com.spacedrift.fieldproof.data.remote.InspectionWorkflowClient
 import com.spacedrift.fieldproof.data.remote.RemoteReport
 import com.spacedrift.fieldproof.data.remote.WorkflowResult
+import com.spacedrift.fieldproof.data.repository.ConflictResolver
 import com.spacedrift.fieldproof.data.repository.InspectionRepository
 import com.spacedrift.fieldproof.data.repository.SyncRepository
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
 import com.spacedrift.fieldproof.sync.SyncScheduler
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
@@ -21,6 +23,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -31,13 +34,30 @@ data class WorkflowUiState(
     val message: String? = null,
     val serverStatus: String? = null,
     val serverVersion: Int? = null,
-    val report: RemoteReport? = null
+    val report: RemoteReport? = null,
+    // Checklist item ids the server rejected on the last submit because required
+    // evidence was missing. Surfaced at field level so the user sees exactly which
+    // rows must be addressed before the inspection can be finalized.
+    val missingEvidenceItemIds: Set<String> = emptySet()
 )
+
+/**
+ * Pulls the field-level required-evidence ids out of a submit [conflict].
+ * Only [ServerConflict.MissingRequiredEvidence] carries per-item detail; every
+ * other conflict maps to an empty set (it is surfaced as a message instead).
+ */
+internal fun missingEvidenceItemIds(conflict: ServerConflict): Set<String> {
+    return (conflict as? ServerConflict.MissingRequiredEvidence)
+        ?.missingChecklistItemIds
+        ?.toSet()
+        .orEmpty()
+}
 
 @HiltViewModel
 class InspectionViewModel @Inject constructor(
     private val repository: InspectionRepository,
     private val syncRepository: SyncRepository,
+    private val conflictResolver: ConflictResolver,
     private val workflowClient: InspectionWorkflowClient,
     private val syncScheduler: SyncScheduler,
     private val connectivity: ConnectivityObserver
@@ -83,6 +103,16 @@ class InspectionViewModel @Inject constructor(
                 initialValue = emptyList()
             )
 
+    val conflicts: StateFlow<List<SyncOperationEntity>> =
+        syncRepository
+            .observeOperations()
+            .map { operations -> operations.filter { it.status == "CONFLICT" } }
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5_000),
+                initialValue = emptyList()
+            )
+
     private val _workflow = MutableStateFlow(WorkflowUiState())
 
     val workflow: StateFlow<WorkflowUiState> = _workflow.asStateFlow()
@@ -122,7 +152,13 @@ class InspectionViewModel @Inject constructor(
 
     fun submitInspection(inspectionId: String) {
         viewModelScope.launch {
-            _workflow.update { it.copy(busy = true, message = null) }
+            _workflow.update {
+                it.copy(
+                    busy = true,
+                    message = null,
+                    missingEvidenceItemIds = emptySet()
+                )
+            }
 
             val currentVersion = currentServerVersion(inspectionId)
 
@@ -135,12 +171,17 @@ class InspectionViewModel @Inject constructor(
                         busy = false,
                         serverStatus = result.value.status,
                         serverVersion = result.value.version,
-                        message = "Inspection submitted (${result.value.status})."
+                        message = "Inspection submitted (${result.value.status}).",
+                        missingEvidenceItemIds = emptySet()
                     )
                 }
 
                 is WorkflowResult.Conflict -> _workflow.update {
-                    it.copy(busy = false, message = result.message)
+                    it.copy(
+                        busy = false,
+                        message = result.message,
+                        missingEvidenceItemIds = missingEvidenceItemIds(result.serverConflict)
+                    )
                 }
 
                 is WorkflowResult.Failed -> _workflow.update {
@@ -234,6 +275,26 @@ class InspectionViewModel @Inject constructor(
         }
     }
 
+    fun retryOperation(operationId: String) {
+        viewModelScope.launch {
+            syncRepository.retryOperation(operationId)
+            syncScheduler.forceRetry()
+        }
+    }
+
+    fun keepLocal(operation: SyncOperationEntity) {
+        viewModelScope.launch {
+            conflictResolver.keepLocal(operation)
+            syncScheduler.forceRetry()
+        }
+    }
+
+    fun useServer(operation: SyncOperationEntity) {
+        viewModelScope.launch {
+            conflictResolver.useServer(operation)
+        }
+    }
+
     fun observeChecklist(
         inspectionId: String
     ): Flow<List<ChecklistItemEntity>> {
@@ -256,6 +317,9 @@ class InspectionViewModel @Inject constructor(
                 title = title,
                 location = location
             )
+            // The inspection (and its future evidence) is now queued; make sure a
+            // unique sync pass is scheduled to upload it when connectivity allows.
+            syncScheduler.enqueueSync()
             onCreated(inspection.id)
         }
     }
@@ -287,6 +351,19 @@ class InspectionViewModel @Inject constructor(
                 localUri = localUri,
                 note = note
             )
+            // Evidence is persisted and the upload operation queued; schedule the
+            // unique sync work so it executes as soon as the device is online.
+            syncScheduler.enqueueSync()
+            if (checklistItemId != null) {
+                // The user addressed a server-flagged field; drop the stale flag
+                // so the submit gate can re-open without wiping other rows.
+                _workflow.update { state ->
+                    state.copy(
+                        missingEvidenceItemIds =
+                            state.missingEvidenceItemIds - checklistItemId
+                    )
+                }
+            }
         }
     }
 

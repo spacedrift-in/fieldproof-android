@@ -8,6 +8,7 @@ import com.spacedrift.fieldproof.readPartValues
 import com.spacedrift.fieldproof.data.remote.EvidenceUploadResult
 import com.spacedrift.fieldproof.data.remote.RemoteInspection
 import com.spacedrift.fieldproof.data.remote.WorkflowResult
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
@@ -141,7 +142,11 @@ class RemoteRepositoryTest {
 
         val result = repository.uploadEvidence(evidence, evidence.id)
 
-        assertEquals(EvidenceUploadResult.Conflict, result)
+        assertTrue(result is EvidenceUploadResult.Conflict)
+        // The default fake body is {"detail":"error"}.
+        val conflict = (result as EvidenceUploadResult.Conflict).serverConflict
+        assertTrue(conflict is ServerConflict.Rejected)
+        assertEquals("error", conflict.message)
     }
 
     @Test

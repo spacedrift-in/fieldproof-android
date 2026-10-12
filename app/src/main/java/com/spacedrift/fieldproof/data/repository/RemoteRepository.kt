@@ -20,6 +20,8 @@ import com.spacedrift.fieldproof.data.remote.RemoteSubmitResponse
 import com.spacedrift.fieldproof.data.remote.ReviewInspectionRequest
 import com.spacedrift.fieldproof.data.remote.SubmitInspectionRequest
 import com.spacedrift.fieldproof.data.remote.WorkflowResult
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
+import com.spacedrift.fieldproof.domain.conflict.ServerConflictParser
 import kotlinx.coroutines.CancellationException
 import retrofit2.HttpException
 import java.io.IOException
@@ -67,7 +69,9 @@ class RemoteRepository @Inject constructor(
             throw exception
         } catch (exception: HttpException) {
             when {
-                exception.code() == 409 -> InspectionUploadResult.Conflict
+                exception.code() == 409 -> InspectionUploadResult.Conflict(
+                    serverConflict = parseConflict(exception)
+                )
 
                 exception.code() >= 500 -> InspectionUploadResult.Failed(
                     retryable = true,
@@ -190,7 +194,7 @@ class RemoteRepository @Inject constructor(
         } catch (exception: HttpException) {
             when {
                 exception.code() == 409 -> WorkflowResult.Conflict(
-                    message = httpMessage(exception)
+                    serverConflict = parseConflict(exception)
                 )
 
                 exception.code() >= 500 -> WorkflowResult.Failed(
@@ -220,6 +224,17 @@ class RemoteRepository @Inject constructor(
         return "Request failed (${exception.code()}): ${exception.message()}"
     }
 
+    /**
+     * Reads and maps the body of a 409 response. The error body can only be
+     * consumed once, so it is read here immediately and handed to the parser.
+     */
+    private fun parseConflict(exception: HttpException): ServerConflict {
+        val body = runCatching {
+            exception.response()?.errorBody()?.string()
+        }.getOrNull()
+        return ServerConflictParser.parse(body)
+    }
+
     private suspend fun upload(
         evidence: EvidenceEntity,
         parts: List<okhttp3.MultipartBody.Part>,
@@ -236,7 +251,9 @@ class RemoteRepository @Inject constructor(
             throw exception
         } catch (exception: HttpException) {
             when {
-                exception.code() == 409 -> EvidenceUploadResult.Conflict
+                exception.code() == 409 -> EvidenceUploadResult.Conflict(
+                    serverConflict = parseConflict(exception)
+                )
 
                 exception.code() >= 500 -> EvidenceUploadResult.Failed(
                     retryable = true,

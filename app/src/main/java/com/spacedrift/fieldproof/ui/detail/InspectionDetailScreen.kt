@@ -57,12 +57,15 @@ import com.spacedrift.fieldproof.data.remote.RemoteReport
 import com.spacedrift.fieldproof.data.remote.WorkflowResult
 import com.spacedrift.fieldproof.ui.components.ChecklistItemRow
 import com.spacedrift.fieldproof.ui.components.ChecklistProgressRow
+import com.spacedrift.fieldproof.ui.components.ConflictResolutionCard
+import com.spacedrift.fieldproof.ui.components.describeConflict
 import com.spacedrift.fieldproof.ui.components.EmptyState
 import com.spacedrift.fieldproof.ui.components.EvidenceCaptureCard
 import com.spacedrift.fieldproof.ui.components.EvidenceRow
 import com.spacedrift.fieldproof.ui.components.SectionHeader
 import com.spacedrift.fieldproof.ui.components.StatusChip
 import com.spacedrift.fieldproof.ui.components.StatusTone
+import com.spacedrift.fieldproof.ui.components.SyncBadge
 import com.spacedrift.fieldproof.ui.components.SyncStatusCard
 import com.spacedrift.fieldproof.ui.components.SyncSummary
 import com.spacedrift.fieldproof.ui.components.deriveSyncSummary
@@ -141,6 +144,7 @@ private fun DetailContent(
         .collectAsState(initial = emptyList())
 
     val syncOperations by viewModel.syncOperations.collectAsState()
+    val conflicts by viewModel.conflicts.collectAsState()
     val isOnline by viewModel.isOnline.collectAsState()
 
     val workflow by viewModel.workflow.collectAsState()
@@ -153,15 +157,25 @@ private fun DetailContent(
         evidence.any { ev ->
             ev.checklistItemId == item.id &&
                 ev.type == "PHOTO" &&
-                ev.syncStatus == "SYNCED"
+                ev.isResolvedForSubmission()
         }
     }
     val inspectionOperation = syncOperations.firstOrNull {
         it.entityType == "INSPECTION" && it.entityId == inspectionId
     }
-    val inspectionSynced = inspectionOperation?.status == "SYNCED"
-    val evidenceSynced = evidence.all { ev -> ev.syncStatus == "SYNCED" }
-    val canSubmit = requiredEvidenceComplete && inspectionSynced && evidenceSynced
+    val inspectionSynced = inspectionOperation?.status == "SYNCED" ||
+        inspectionOperation?.status == "RESOLVED"
+    val evidenceSynced = evidence.all { ev -> ev.isResolvedForSubmission() }
+    val serverRejected = workflow.missingEvidenceItemIds.isNotEmpty()
+    val canSubmit = requiredEvidenceComplete && inspectionSynced && evidenceSynced && !serverRejected
+
+    val conflictPresentations = conflicts
+        .filter { operation ->
+            (operation.entityType == "INSPECTION" && operation.entityId == inspectionId) ||
+                (operation.entityType == "EVIDENCE" &&
+                    evidence.any { it.id == operation.entityId })
+        }
+        .map { operation -> describeConflict(operation, evidence, inspection) }
 
     val syncSummary: SyncSummary = deriveSyncSummary(syncOperations, isOnline)
 
@@ -219,6 +233,10 @@ private fun DetailContent(
                     ) {
                         StatusChip(label = inspection.status)
 
+                        inspectionOperation?.let { operation ->
+                            SyncBadge(status = operation.status)
+                        }
+
                         workflow.serverStatus?.let { serverStatus ->
                             StatusChip(label = serverStatus.take(20))
                         }
@@ -231,6 +249,24 @@ private fun DetailContent(
                     summary = syncSummary,
                     onRetrySync = { viewModel.retrySync() }
                 )
+            }
+
+            if (conflictPresentations.isNotEmpty()) {
+                item {
+                    ConflictResolutionCard(
+                        conflicts = conflictPresentations,
+                        onKeepLocal = { operationId ->
+                            conflicts
+                                .firstOrNull { it.id == operationId }
+                                ?.let { viewModel.keepLocal(it) }
+                        },
+                        onUseServer = { operationId ->
+                            conflicts
+                                .firstOrNull { it.id == operationId }
+                                ?.let { viewModel.useServer(it) }
+                        }
+                    )
+                }
             }
 
             workflow.message?.let { message ->
@@ -284,7 +320,9 @@ private fun DetailContent(
                 SectionHeader(
                     title = stringResource(R.string.checklist_heading),
                     trailing = {
-                        if (requiredItems.isNotEmpty() && !requiredEvidenceComplete) {
+                        if (workflow.missingEvidenceItemIds.isNotEmpty() ||
+                            (requiredItems.isNotEmpty() && !requiredEvidenceComplete)
+                        ) {
                             StatusChip(
                                 label = "Action needed",
                                 tone = statusTone("FAILED")
@@ -310,7 +348,8 @@ private fun DetailContent(
                         { onCaptureForItem(item.id, item.title) }
                     } else {
                         null
-                    }
+                    },
+                    serverMissingEvidence = item.id in workflow.missingEvidenceItemIds
                 )
             }
 
@@ -378,7 +417,16 @@ private fun DetailContent(
                 ) { item ->
                     EvidenceRow(
                         evidence = item,
-                        checklistTitle = checklist.firstOrNull { it.id == item.checklistItemId }?.title
+                        checklistTitle = checklist.firstOrNull { it.id == item.checklistItemId }?.title,
+                        onRetry = syncOperations
+                            .firstOrNull {
+                                it.entityType == "EVIDENCE" &&
+                                    it.entityId == item.id &&
+                                    it.status == "FAILED"
+                            }
+                            ?.let { operation ->
+                                { viewModel.retryOperation(operation.id) }
+                            }
                     )
                 }
             }
@@ -425,7 +473,8 @@ private fun DetailContent(
                                 canSubmit = canSubmit,
                                 inspectionSynced = inspectionSynced,
                                 requiredEvidenceComplete = requiredEvidenceComplete,
-                                evidenceSynced = evidenceSynced
+                                evidenceSynced = evidenceSynced,
+                                serverRejected = serverRejected
                             ),
                             inspectionSynced = inspectionSynced,
                             requiredEvidenceComplete = requiredEvidenceComplete,
@@ -445,6 +494,9 @@ private fun DetailContent(
     }
 }
 
+private fun EvidenceEntity.isResolvedForSubmission(): Boolean =
+    syncStatus == "SYNCED" || syncStatus == "SUPERSEDED"
+
 private fun requiredEvidenceCount(
     requiredItems: List<ChecklistItemEntity>,
     evidence: List<EvidenceEntity>
@@ -453,7 +505,7 @@ private fun requiredEvidenceCount(
         evidence.any { ev ->
             ev.checklistItemId == item.id &&
                 ev.type == "PHOTO" &&
-                ev.syncStatus == "SYNCED"
+                ev.isResolvedForSubmission()
         }
     }
 }
@@ -486,10 +538,14 @@ private fun submitHint(
     canSubmit: Boolean,
     inspectionSynced: Boolean,
     requiredEvidenceComplete: Boolean,
-    evidenceSynced: Boolean
+    evidenceSynced: Boolean,
+    serverRejected: Boolean
 ): String? {
     if (canSubmit) return null
     return when {
+        serverRejected ->
+            "The server rejected this submission. Attach the missing required evidence " +
+                "to the highlighted items, then submit again."
         !inspectionSynced ->
             "The inspection must sync first. Wait for sync or tap Retry sync."
         !requiredEvidenceComplete ->

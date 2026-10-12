@@ -108,4 +108,37 @@ class ChecklistCompletionDeviceTest {
         composeRule.onNodeWithText("Evidence missing").assertDoesNotExist()
         composeRule.onNodeWithText("Add evidence").assertDoesNotExist()
     }
+
+    @Test
+    fun serverFlaggedItem_showsFieldLevelServerValidation() {
+        composeRule.setContent {
+            FieldProofTheme {
+                ChecklistItemRow(
+                    item = item(completed = true),
+                    hasSyncedPhoto = true,
+                    onCheckedChange = {},
+                    onAddEvidence = {},
+                    serverMissingEvidence = true
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Server requires evidence").assertIsDisplayed()
+    }
+
+    @Test
+    fun unFlaggedItem_hidesServerValidation() {
+        composeRule.setContent {
+            FieldProofTheme {
+                ChecklistItemRow(
+                    item = item(),
+                    hasSyncedPhoto = false,
+                    onCheckedChange = {},
+                    onAddEvidence = {}
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Server requires evidence").assertDoesNotExist()
+    }
 }

@@ -118,7 +118,9 @@ fun SyncStatusCard(
             }
         }
 
-        if (summary.state == SyncState.ATTENTION && onRetrySync != null) {
+        // Conflicts need a deliberate per-item choice, so they do not get a
+        // blanket "Retry sync" button here — only genuinely retryable failures do.
+        if (summary.state == SyncState.ATTENTION && summary.failed > 0 && onRetrySync != null) {
             Spacer(modifier = Modifier.height(4.dp))
             Button(
                 onClick = onRetrySync,

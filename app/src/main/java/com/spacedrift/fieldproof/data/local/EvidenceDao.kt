@@ -47,4 +47,12 @@ interface EvidenceDao {
     suspend fun deleteForInspection(
         inspectionId: String
     )
+
+    @Query(
+        "DELETE FROM evidence " +
+                "WHERE id = :evidenceId"
+    )
+    suspend fun deleteEvidence(
+        evidenceId: String
+    )
 }

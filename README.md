@@ -73,12 +73,13 @@ a documented API contract and a small FastAPI skeleton. See
 | **Checklists** | Default checklist items with required/optional flags; per-item completion tracked locally |
 | **Evidence** | Timestamped photo capture (CameraX) and text notes, stored app-privately and linked to an inspection |
 | **Sync model** | Durable local `SyncOperation` records with a stable idempotency key per evidence upload |
+| **Conflicts** | Server conflicts are surfaced per item; the user keeps their local copy (re-queued under a fresh key) or accepts the server version, with no silent data loss |
 | **Permissions** | Runtime camera permission with an actionable denied state |
 | **UI** | Jetpack Compose, Material 3, loading / empty / error-aware states |
 | **API contract** | Retrofit client matching the documented `/api/v1` endpoints, incl. `Idempotency-Key` |
 
 **Not implemented yet:** background (periodic) automatic sync, checklist-outcome
-upload, conflict-resolution UI, authentication. See
+upload, authentication. See
 [`fieldproof-starter/docs/known-limitations.md`](fieldproof-starter/docs/known-limitations.md)
 for the full, dated log.
 
@@ -201,7 +202,8 @@ Open the folder in Android Studio to use the Run configuration.
 ### Device / emulator UI tests
 
 Instrumented Compose tests cover inspection creation, checklist completion,
-camera permission denial, the evidence-capture state, and sync-state display.
+camera permission denial, the camera capture/error states, the home loading state,
+the evidence-capture state, and sync-state display.
 They run against the real framework on a device or emulator (API 34 is pinned
 in CI; any API ≥ 24 works):
 
@@ -217,7 +219,9 @@ CI runs this suite automatically in the dedicated `android-instrumented`
 emulator lane (API 34, x86_64, headless — see `.github/workflows/ci.yml`). The
 same suite can be run on a physical device; a Google Play-protected ROM (e.g.
 MIUI) may require "Install via USB" and can block instrumentation input
-injection.
+injection, and may also deny the test activity from starting until background
+activity starts are allowed (for MIUI this is app-op `10021`:
+`adb shell appops set com.spacedrift.fieldproof 10021 allow`).
 
 To reproduce the full walking demo with the backend (synthetic data only), follow
 [`fieldproof-starter/docs/demo.md`](fieldproof-starter/docs/demo.md); screenshots
@@ -250,7 +254,7 @@ including idempotent evidence upload and optimistic concurrency — is in
 | :--- | :--- | :--- |
 | 1 · Definition | User flow, data model, API contract, acceptance criteria | ✅ docs in `fieldproof-starter/docs/` |
 | 2 · Vertical slice | One complete offline workflow on synthetic fixtures | ✅ see `docs/demo.md` Steps 1-12 |
-| 3 · Reliability | Failure recovery, access checks, automated tests | 🟡 52 JVM + 25 instrumented tests; CI emulator lane |
+| 3 · Reliability | Failure recovery, access checks, automated tests | 🟡 89 JVM + 42 instrumented tests; CI emulator lane |
 | 4 · Demonstration | Repeatable demo, screenshots, documented limitations | ✅ `docs/demo.md`, `docs/screenshots/`, `docs/known-limitations.md` |
 | 5 · Handoff | Reproducible setup, build instructions, maintenance notes | 🟡 this README + `scripts/verify_clean_setup.sh` |
 

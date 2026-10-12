@@ -2,6 +2,7 @@ package com.spacedrift.fieldproof.data.repository
 
 import com.spacedrift.fieldproof.data.local.SyncOperationDao
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 import javax.inject.Inject
@@ -31,6 +32,18 @@ class SyncRepository @Inject constructor(
 
     suspend fun retryFailedOperations() {
         syncOperationDao.requeueFailed(
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Requeue a single failed operation so the worker retries it. Backs the
+     * field-level "Retry" action; only sync metadata is reset, local content is
+     * never touched.
+     */
+    suspend fun retryOperation(operationId: String) {
+        syncOperationDao.requeueOperation(
+            operationId = operationId,
             updatedAt = System.currentTimeMillis()
         )
     }
@@ -116,15 +129,35 @@ class SyncRepository @Inject constructor(
         )
     }
 
+    /**
+     * Marks an operation as conflicted, preserving the server's message and the
+     * raw 409 payload for the UI. Only sync metadata is touched; the local
+     * inspection/evidence records are never modified here.
+     */
+    suspend fun markConflict(
+        operation: SyncOperationEntity,
+        conflict: ServerConflict
+    ) {
+        syncOperationDao.markConflict(
+            operationId = operation.id,
+            error = conflict.message,
+            conflictDetail = conflict.rawDetail,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Conflict variant for callers that only have a message (e.g. tests).
+     * Keeps the operation on CONFLICT without a structured payload.
+     */
     suspend fun markConflict(
         operation: SyncOperationEntity,
         error: String
     ) {
-        syncOperationDao.updateStatus(
+        syncOperationDao.markConflict(
             operationId = operation.id,
-            status = "CONFLICT",
-            attempts = operation.attempts,
-            lastError = error,
+            error = error,
+            conflictDetail = null,
             updatedAt = System.currentTimeMillis()
         )
     }
@@ -137,6 +170,33 @@ class SyncRepository @Inject constructor(
             status = "SYNCED",
             attempts = operation.attempts,
             lastError = null,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Requeue a conflicted operation so the sync worker retries it. Used when the
+     * user chooses to keep their local copy; the local entity is preserved
+     * separately by [ConflictResolver].
+     */
+    suspend fun requeueConflict(
+        operation: SyncOperationEntity
+    ) {
+        syncOperationDao.requeueOperation(
+            operationId = operation.id,
+            updatedAt = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Mark a conflicted operation as deliberately resolved. The operation is
+     * retained (status ``RESOLVED``) for auditability rather than deleted.
+     */
+    suspend fun resolveConflict(
+        operation: SyncOperationEntity
+    ) {
+        syncOperationDao.markResolved(
+            operationId = operation.id,
             updatedAt = System.currentTimeMillis()
         )
     }
