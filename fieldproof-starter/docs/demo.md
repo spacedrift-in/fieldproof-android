@@ -147,9 +147,12 @@ After the sync runs, the row shows **Synced / Satisfies: General** and the
 status header reports **Sync complete**. The note exists server-side (see §6).
 📷 `06-detail-note-synced.png`
 
-> **Demo quirk to narrate:** the app currently syncs **on launch and on manual
-> retry** (no background/periodic worker). Restart the app (or tap *Retry sync*)
-> to flush queued evidence. Logged in `known-limitations.md` as `KL-007`.
+> **Demo quirk to narrate:** sync is trigger-driven. Queuing an inspection or
+> evidence enqueues a unique one-time `SyncWorker` (connected-network
+> constrained), so it flushes automatically once the API is reachable; there is
+> still **no background/periodic worker**, so evidence added while offline waits
+> for connectivity or a manual *Retry sync*. Logged in `known-limitations.md` as
+> `KL-004`.
 
 ### Step 7 — Camera permission request
 Open **Add evidence** on the required *Emergency exit* item. The OS shows the
@@ -201,7 +204,7 @@ evidence references and reviewer signoff.
 The demo claims are backed by test suites, not only the live walkthrough:
 
 ```bash
-# Backend (22 tests; real PostgreSQL)
+# Backend (28 tests; real PostgreSQL)
 cd fieldproof-starter
 export DATABASE_URL="postgresql+psycopg://fieldproof:fieldproof@localhost:5432/fieldproof"
 .venv/bin/python -m pytest backend/tests -q
@@ -214,9 +217,9 @@ cd ..
 ANDROID_SERIAL=emulator-5554 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-`52 = 12 RoomPersistence + 2 OfflineToSyncIntegration + 15 SyncRunner +
-17 RemoteRepository/EvidenceRequestFactory + 5 Example/Device ...` (exact counts
-are printed by the suites). The GitHub Actions workflow
+`93 = Room persistence + offline-to-sync + sync runner + remote repository /
+request-factory + UI/state + device tests` (the exact counts are printed by the
+suites and are the source of truth). The GitHub Actions workflow
 (`.github/workflows/ci.yml`) runs the unit + instrumented lanes on clean
 runners on every push.
 
@@ -249,3 +252,26 @@ adb shell pm clear com.spacedrift.fieldproof
 # or uninstall for a truly fresh start
 adb uninstall com.spacedrift.fieldproof
 ```
+
+## 8. Reproducibility checklist (no private data)
+
+A reviewer can tick these on a clean machine; every input is synthetic and
+version-controlled.
+
+- [ ] `scripts/verify_clean_setup.sh` exits `0` (add `--full` to also run the
+      backend pytest suite and the Android unit tests).
+- [ ] `docker compose up -d db` starts PostgreSQL 16 and `/health` returns
+      `{"status":"ok",...}`.
+- [ ] `scripts/seed_demo.py` runs end to end and re-running it is idempotent
+      (still **3** evidence items, no duplicates) — it only uses synthetic ids,
+      the deterministic `tests/fixtures/evidence-sample.png` placeholder, and
+      fixed `Idempotency-Key`s.
+- [ ] `docs/screenshots/` contains `01`–`12` plus `sample-report.pdf`, all
+      captured from synthetic data (no real facility photos, names or tokens).
+- [ ] The Android app builds (`./gradlew :app:assembleDebug`) and its unit tests
+      pass (`./gradlew :app:testDebugUnitTest`).
+- [ ] No secrets or private data are required: `.gitignore` excludes `.env`,
+      `local.properties`, `.venv/` and `backend/var/`; grep the tree for
+      suspicious values if in doubt.
+- [ ] Residual state is cleaned with `docker compose down -v` and
+      `adb uninstall com.spacedrift.fieldproof`.

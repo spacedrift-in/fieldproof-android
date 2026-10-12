@@ -109,9 +109,10 @@ If no `DATABASE_URL`/`TEST_DATABASE_URL` is set, the database-backed tests are
   client tracks completion locally. Consequence: report `passed/failed` counts are
   `0` until that endpoint exists.
 - Schema is created with `create_all`; no migrations (e.g. Alembic) yet.
-- The app syncs on launch or manual *Retry sync*; there is no background/periodic
-  worker (evidence added after launch waits for the next trigger). See
-  `docs/known-limitations.md` `KL-004`.
+- Sync is trigger-driven: queuing an inspection/evidence enqueues a unique
+  one-time worker (connected-network constrained), and launch also enqueues. There
+  is no background/periodic worker, so evidence added while offline waits for
+  connectivity or a manual *Retry sync*. See `docs/known-limitations.md` `KL-004`.
 - PDF reports reference evidence (kind, id, note snippet) and reviewer signoff but
   do not embed raw photo bitmaps (`KL-005`).
 - The full, dated list lives in [`docs/known-limitations.md`](docs/known-limitations.md).

@@ -79,6 +79,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     instead of a dead end; *Not now* still falls back to a written note
     (`CameraPermissionDeviceTest`).
 
+### Documentation & reproducibility
+
+- `fieldproof-starter/docs/demo.md` gains a reproducibility checklist and its
+  test counts are refreshed; the sync caveat now reflects the on-queue
+  `SyncWorker` (trigger-driven, no periodic worker).
+- `scripts/verify_clean_setup.sh` no longer fails when the optional demo API is
+  not yet running, asserts the demo artifacts exist (synthetic template,
+  seed script, 12 screenshots, sample report PDF), and `--full` runs the backend
+  pytest suite plus the Android unit tests.
+- `known-limitations.md` `KL-004` and `fieldproof-starter/README.md` updated to
+  describe on-queue sync scheduling accurately.
+- Verified end to end against a throwaway PostgreSQL 16 instance:
+  `scripts/seed_demo.py` is idempotent (3 evidence items, no duplicates after a
+  re-run), regenerates `docs/screenshots/sample-report.pdf`, and the synthetic
+  photo fixture is byte-for-byte deterministic.
+
 ### Changed
 
 - Sync-state presentation now distinguishes every state independently instead of
