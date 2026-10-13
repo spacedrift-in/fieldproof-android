@@ -290,6 +290,6 @@ for attribution.
 
 ## Contact
 
-[Spacedrift](https://spacedrift.in) · [Project enquiries](mailto:spacedrift.contact@gmail.com)
+[Spacedrift](https://spacedrift.in) · [Project enquiries](mailto:lourdu@spacedrift.in)
 
 Copyright © 2026 Spacedrift.
