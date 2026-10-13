@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+   FileProvider-exported paths. Only the generated report PDF is shareable, and
+   only from the app's private cache directory. Evidence photos are never
+   exported through the FileProvider: they live encrypted in internal storage
+   and are only ever shared through an explicit, user-consented export flow.
+-->
 <paths>
     <cache-path
         name="reports"
         path="reports/" />
-    <external-files-path
-        name="fieldproof_pictures"
-        path="Pictures/fieldproof/" />
 </paths>

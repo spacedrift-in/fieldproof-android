@@ -122,6 +122,31 @@ class InspectionViewModel @Inject constructor(
             repository.observeInspectionSummaries().first()
             _homeReady.value = true
         }
+        // Retention sweep: drop the local copy of evidence that has already
+        // synced and aged out, so sensitive bytes do not linger on device.
+        viewModelScope.launch {
+            repository.purgeExpiredEvidence()
+        }
+    }
+
+    /**
+     * Deletes an inspection and everything under it, including the sealed
+     * evidence files and queued sync operations.
+     */
+    fun purgeExpiredEvidence() {
+        viewModelScope.launch {
+            repository.purgeExpiredEvidence()
+        }
+    }
+
+    /**
+     * Full local wipe (evidence files plus all local rows), for the user-facing
+     * "delete all data" action.
+     */
+    fun deleteAllLocalData() {
+        viewModelScope.launch {
+            repository.deleteAllLocalData()
+        }
     }
 
     fun openInspection(inspectionId: String) {
@@ -339,6 +364,22 @@ class InspectionViewModel @Inject constructor(
                 itemId = itemId,
                 completed = completed
             )
+        }
+    }
+
+    fun setChecklistOutcome(
+        itemId: String,
+        outcome: String,
+        note: String?
+    ) {
+        viewModelScope.launch {
+            repository.setChecklistOutcome(
+                itemId = itemId,
+                outcome = outcome,
+                note = note
+            )
+            // Queue the outcome for upload as soon as connectivity allows.
+            syncScheduler.enqueueSync()
         }
     }
 

@@ -15,10 +15,12 @@
       asserts evidence is read back linked to its checklist item with the note intact —
       `evidence is linked to its checklist item and keeps its note`.)
 - [x] Missing required evidence blocks submission and report finalization on the server.
-      (server `_missing_required_evidence` → 409 `missing_checklist_item_ids`, asserted by
-      `test_submit_blocked_without_required_evidence`; the Android submit flow surfaces
-      those ids per checklist row and blocks re-submit — `InspectionViewModel` +
-      `ChecklistItemRow`, asserted by `InspectionViewModelSubmitValidationTest` and
+      (server `_submit_validation` → 409 with `missing_checklist_item_ids` + field-level
+      `errors` codes `MISSING_REQUIRED_EVIDENCE`/`OUTCOME_REQUIRED`, asserted by
+      `test_submit_blocked_without_required_evidence` and the required-outcome tests;
+      the Android submit flow surfaces those ids per checklist row and blocks re-submit
+      until each required item has evidence **and** a terminal outcome — `InspectionViewModel`
+      + `ChecklistItemRow`, asserted by `InspectionViewModelSubmitValidationTest` and
       `ChecklistCompletionDeviceTest`.)
 - [x] Sync UI distinguishes queued, uploading, synced, failed, and conflict states.
       (`syncStatusLabel`/`SyncBadge` render each state distinctly — inspection

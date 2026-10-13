@@ -1,5 +1,7 @@
 package com.spacedrift.fieldproof.sync
 
+import com.spacedrift.fieldproof.FakeChecklistItemDao
+import com.spacedrift.fieldproof.FakeChecklistOutcomeUploader
 import com.spacedrift.fieldproof.FakeEvidenceDao
 import com.spacedrift.fieldproof.FakeEvidenceUploader
 import com.spacedrift.fieldproof.FakeInspectionDao
@@ -33,8 +35,10 @@ class SyncConflictPreservationTest {
         syncRepository = syncRepository,
         inspectionDao = inspectionDao,
         evidenceDao = evidenceDao,
+        checklistItemDao = FakeChecklistItemDao(),
         inspectionUploader = FakeInspectionUploader(),
-        uploader = uploader
+        uploader = uploader,
+        checklistOutcomeUploader = FakeChecklistOutcomeUploader()
     )
 
     @Test

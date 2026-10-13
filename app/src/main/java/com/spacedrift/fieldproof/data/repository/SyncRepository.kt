@@ -60,6 +60,31 @@ class SyncRepository @Inject constructor(
         queueCreate(entityId = inspectionId, entityType = "INSPECTION")
     }
 
+    /**
+     * Queue/refresh a checklist-outcome sync operation. The operation id is
+     * deterministic per item, so repeated edits collapse into one pending
+     * UPDATE rather than piling up duplicate operations. The latest local
+     * outcome is read at upload time, so the newest edit always wins.
+     */
+    suspend fun queueChecklistOutcome(
+        checklistItemId: String
+    ) {
+        val now = System.currentTimeMillis()
+        syncOperationDao.insert(
+            SyncOperationEntity(
+                id = "checklist:$checklistItemId",
+                entityId = checklistItemId,
+                entityType = "CHECKLIST",
+                operationType = "UPDATE",
+                status = "QUEUED",
+                attempts = 0,
+                lastError = null,
+                createdAt = now,
+                updatedAt = now
+            )
+        )
+    }
+
     suspend fun getInspectionOperation(
         inspectionId: String
     ): SyncOperationEntity? {
@@ -89,6 +114,20 @@ class SyncRepository @Inject constructor(
 
     suspend fun getQueuedOperations(): List<SyncOperationEntity> {
         return syncOperationDao.getQueuedOperations()
+    }
+
+    /**
+     * Removes sync operations for the given entity ids. Used when an inspection
+     * (and everything under it) is deleted so queued/failed work does not outlive
+     * the deleted records.
+     */
+    suspend fun deleteForEntities(entityIds: List<String>) {
+        if (entityIds.isEmpty()) return
+        syncOperationDao.deleteForEntities(entityIds)
+    }
+
+    suspend fun deleteAll() {
+        syncOperationDao.deleteAll()
     }
 
     suspend fun markUploading(

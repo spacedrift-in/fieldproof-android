@@ -12,6 +12,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import androidx.work.testing.WorkManagerTestInitHelper
+import com.spacedrift.fieldproof.FakeChecklistItemDao
+import com.spacedrift.fieldproof.FakeChecklistOutcomeUploader
 import com.spacedrift.fieldproof.FakeEvidenceDao
 import com.spacedrift.fieldproof.FakeEvidenceUploader
 import com.spacedrift.fieldproof.FakeInspectionDao
@@ -61,8 +63,10 @@ class SyncSchedulerWorkManagerTest {
             syncRepository = SyncRepository(operations),
             inspectionDao = FakeInspectionDao(),
             evidenceDao = evidence,
+            checklistItemDao = FakeChecklistItemDao(),
             inspectionUploader = FakeInspectionUploader(),
-            uploader = evidenceUploader
+            uploader = evidenceUploader,
+            checklistOutcomeUploader = FakeChecklistOutcomeUploader()
         )
 
         val configuration = Configuration.Builder()

@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         EvidenceEntity::class,
         SyncOperationEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class FieldProofDatabase : RoomDatabase() {
@@ -35,6 +35,31 @@ abstract class FieldProofDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE sync_operations ADD COLUMN conflictDetail TEXT"
+                )
+            }
+        }
+
+        /**
+         * Adds the checklist-outcome columns (outcome/note/syncedVersion/syncState)
+         * so PASS/FAIL/NOT_APPLICABLE and per-item notes can be tracked and synced.
+         * Non-destructive: existing rows keep their `completed` flag and start as
+         * NOT_STARTED/LOCAL.
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE checklist_items ADD COLUMN outcome TEXT NOT NULL " +
+                        "DEFAULT 'NOT_STARTED'"
+                )
+                db.execSQL(
+                    "ALTER TABLE checklist_items ADD COLUMN note TEXT"
+                )
+                db.execSQL(
+                    "ALTER TABLE checklist_items ADD COLUMN syncedVersion INTEGER"
+                )
+                db.execSQL(
+                    "ALTER TABLE checklist_items ADD COLUMN syncState TEXT NOT NULL " +
+                        "DEFAULT 'LOCAL'"
                 )
             }
         }

@@ -147,4 +147,17 @@ interface SyncOperationDao {
     suspend fun delete(
         operationId: String
     )
+
+    @Query(
+        """
+        DELETE FROM sync_operations
+        WHERE entityId IN (:entityIds)
+        """
+    )
+    suspend fun deleteForEntities(
+        entityIds: List<String>
+    )
+
+    @Query("DELETE FROM sync_operations")
+    suspend fun deleteAll()
 }

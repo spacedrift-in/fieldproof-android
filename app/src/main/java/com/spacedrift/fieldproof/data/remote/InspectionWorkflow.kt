@@ -51,6 +51,18 @@ data class RemoteInspection(
     val reviews: List<RemoteReview> = emptyList()
 )
 
+data class ChecklistOutcomeRequest(
+    val status: String,
+    val note: String? = null,
+    val expected_version: Int? = null
+)
+
+data class RemoteChecklistOutcomeResponse(
+    val inspection_id: String,
+    val inspection_version: Int,
+    val item: RemoteChecklistItem
+)
+
 data class SubmitInspectionRequest(
     val expected_version: Int? = null
 )

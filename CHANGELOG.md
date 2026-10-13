@@ -79,6 +79,32 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     instead of a dead end; *Not now* still falls back to a written note
     (`CameraPermissionDeviceTest`).
 
+- Privacy & security hardening on Android: `allowBackup=false` with explicit
+  backup/data-extraction excludes, Keystore-backed AES-256-GCM encryption of
+  captured evidence files (`security/EvidenceVault.kt`), `FLAG_SECURE` on the
+  detail and camera screens (`ui/components/SecureScreen.kt`), and
+  release-gated logging. See `fieldproof-starter/docs/security.md`.
+- Deletion and retention across the stack: `DELETE /api/v1/inspections/{id}`,
+  confirmed tenant wipe (`DELETE /api/v1/tenant`) and an admin-triggered
+  retention sweep (`POST /api/v1/maintenance/retention`, `EVIDENCE_RETENTION_DAYS`);
+  the Android client also purges expired evidence on launch and supports
+  deleting all local data (`InspectionRepository`, `SyncRepository`).
+- Production deployment/security baseline for the backend: private S3-compatible
+  object storage with SSE, lifecycle and public-access block, size-bounded
+  streaming uploads, magic-byte MIME validation and a malware-scan integration
+  point, `/readyz`, CORS allowlist, per-process rate limiting, a non-root
+  production image, and `docs/deployment.md` / `docs/disaster-recovery.md`.
+- Signed Android release pipeline (`.github/workflows/release.yml`): a gated
+  build produces a versioned, signed AAB **and** APK, verifies the signature,
+  and archives R8 mapping files, a CycloneDX SBOM, a license report and
+  checksums, with SLSA build provenance and a GitHub Release. Signing keys are
+  never committed — the upload keystore is fetched from AWS Secrets Manager over
+  GitHub OIDC at build time (`scripts/fetch_upload_keystore.sh`,
+  `scripts/check_repo_hygiene.sh`). Dependency/license tooling
+  (`scripts/generate_sbom.py`, `scripts/license_scan.py`,
+  `scripts/license-policy.json`) enforces an allow/deny policy over the release
+  runtime classpath. See `fieldproof-starter/docs/release.md`.
+
 ### Documentation & reproducibility
 
 - `fieldproof-starter/docs/demo.md` gains a reproducibility checklist and its

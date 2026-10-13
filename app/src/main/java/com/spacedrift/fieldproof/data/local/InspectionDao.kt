@@ -38,4 +38,7 @@ interface InspectionDao {
     suspend fun deleteInspection(
         inspectionId: String
     )
+
+    @Query("DELETE FROM inspections")
+    suspend fun deleteAll()
 }

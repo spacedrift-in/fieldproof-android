@@ -1,6 +1,7 @@
-# FieldProof — locked scope (v1.0)
+# FieldProof — locked scope (v1.1)
 
-- **Status:** LOCKED on 2026-10-12.
+- **Status:** LOCKED on 2026-10-12; amended **2026-10-13** (KL-002 mitigation,
+  Linear backlog item 7: server checklist-outcome upload brought into scope).
 - **Owner:** Spacedrift.
 - **Nature of this document:** a *consolidation* of already-approved artifacts —
   `README.md`, `fieldproof-starter/README.md`, `docs/decisions/0001-architecture.md`,
@@ -23,20 +24,24 @@ suites / `docs/demo.md`):
 | Area | In scope |
 | :--- | :--- |
 | Inspections | Create offline; list and reopen after process death (Room = source of truth). |
-| Checklists | Default items with required/optional flags; per-item completion tracked locally. |
+| Checklists | Default items with required/optional flags; per-item outcome (`PASS`/`FAIL`/`NOT_APPLICABLE`) and note captured locally and synced to the server (KL-002). |
 | Evidence | Timestamped photo capture (CameraX) and text notes, stored app-privately, linked to an inspection + checklist item. |
-| Sync model | Durable local `SyncOperation` records with a stable per-upload idempotency key; queuing schedules a unique connected-network `SyncWorker` pass. |
+| Sync model | Durable local `SyncOperation` records (`INSPECTION/CREATE`, `EVIDENCE/CREATE`, `CHECKLIST/UPDATE`) with stable ids/idempotency keys; queuing schedules a unique connected-network `SyncWorker` pass. |
 | Conflicts | Server conflicts surfaced per item; *Keep local & retry* (fresh key) or *Use server*; no silent overwrite/loss. |
 | Permissions | Runtime camera permission with an actionable denied state. |
 | UI | Jetpack Compose + Material 3; loading / empty / error-aware states on primary flows. |
 | API contract | Retrofit client matching `/api/v1`, incl. `Idempotency-Key`. |
 
 **Explicitly out of scope** (adding any of these requires a decision): background
-*periodic* automatic sync; server checklist-outcome upload
-(`PASS`/`FAIL`/`NOT_APPLICABLE` + per-item notes); authentication / authorization;
+*periodic* automatic sync; authentication / authorization;
 iOS client; background location; raw photo bitmaps embedded in the PDF; DB
 migrations (Alembic). Sources: `README.md` → *Not implemented yet*,
 `docs/known-limitations.md` (KL-001…KL-005).
+
+> **Amended 2026-10-13:** server checklist-outcome upload
+> (`PASS`/`FAIL`/`NOT_APPLICABLE` + per-item notes) was previously out of scope
+> and is now **in scope**, per Linear backlog item 7 and the KL-002 mitigation
+> (decision recorded there). See §1 and `docs/api-contract.md`.
 
 ## 2. User journeys
 

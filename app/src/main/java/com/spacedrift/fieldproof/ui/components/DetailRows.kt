@@ -1,7 +1,6 @@
 package com.spacedrift.fieldproof.ui.components
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -25,7 +24,6 @@ import androidx.compose.material.icons.outlined.Notes
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -48,13 +46,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.FilterChip
+import androidx.compose.ui.platform.LocalContext
 import com.spacedrift.fieldproof.R
 import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
+import com.spacedrift.fieldproof.security.EvidenceVaults
 import com.spacedrift.fieldproof.ui.format.Format
 import com.spacedrift.fieldproof.ui.theme.Dimens
 import com.spacedrift.fieldproof.ui.theme.LocalStatusColors
-import java.io.File
 
 @Composable
 fun ChecklistProgressRow(
@@ -102,14 +101,19 @@ fun ChecklistProgressRow(
 fun ChecklistItemRow(
     item: ChecklistItemEntity,
     hasSyncedPhoto: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+    onOutcomeChange: (String) -> Unit,
+    onNoteChange: (String?) -> Unit,
     onAddEvidence: (() -> Unit)?,
     modifier: Modifier = Modifier,
-    serverMissingEvidence: Boolean = false
+    serverMissingEvidence: Boolean = false,
+    enabled: Boolean = true
 ) {
     val statusColors = LocalStatusColors.current
-    val open = statusTone("FAILED")
-    val complete = statusTone("SYNCED")
+
+    var noteText by remember(item.id) { mutableStateOf(item.note.orEmpty()) }
+    var showNoteField by remember(item.id) { mutableStateOf(!item.note.isNullOrBlank()) }
+    val outcomePending = item.required &&
+        item.outcome == ChecklistItemEntity.OUTCOME_NOT_STARTED
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -117,100 +121,199 @@ fun ChecklistItemRow(
             containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(Dimens.md),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(Dimens.md)
         ) {
-            Checkbox(
-                checked = item.completed,
-                onCheckedChange = onCheckedChange
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
 
-            Column(
-                modifier = Modifier.weight(1f)
+            Spacer(modifier = Modifier.height(2.dp))
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    text = if (item.required) {
+                        stringResource(R.string.required_label)
+                    } else {
+                        stringResource(R.string.optional_label)
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+
+                if (hasSyncedPhoto) {
+                    Icon(
+                        imageVector = Icons.Outlined.CheckCircle,
+                        contentDescription = null,
+                        tint = statusColors.success,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.photo_attached),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = statusColors.success
+                    )
+                } else if (item.required) {
+                    Icon(
+                        imageVector = Icons.Outlined.Warning,
+                        contentDescription = null,
+                        tint = statusColors.warning,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.evidence_missing),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = statusColors.warning
+                    )
+                }
+            }
+
+            if (serverMissingEvidence) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Outlined.Warning,
+                        contentDescription = null,
+                        tint = statusColors.error,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.server_evidence_missing),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = statusColors.error
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(Dimens.md))
+
+            Text(
+                text = stringResource(R.string.outcome_label),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutcomeChip(
+                    label = stringResource(R.string.outcome_pass),
+                    selected = item.outcome == ChecklistItemEntity.OUTCOME_PASS,
+                    enabled = enabled,
+                    onClick = { onOutcomeChange(ChecklistItemEntity.OUTCOME_PASS) }
+                )
+                OutcomeChip(
+                    label = stringResource(R.string.outcome_fail),
+                    selected = item.outcome == ChecklistItemEntity.OUTCOME_FAIL,
+                    enabled = enabled,
+                    onClick = { onOutcomeChange(ChecklistItemEntity.OUTCOME_FAIL) }
+                )
+                OutcomeChip(
+                    label = stringResource(R.string.outcome_not_applicable),
+                    selected = item.outcome == ChecklistItemEntity.OUTCOME_NOT_APPLICABLE,
+                    enabled = enabled,
+                    onClick = {
+                        onOutcomeChange(ChecklistItemEntity.OUTCOME_NOT_APPLICABLE)
+                    }
+                )
+
+                if (outcomePending) {
+                    Icon(
+                        imageVector = Icons.Outlined.Warning,
+                        contentDescription = null,
+                        tint = statusColors.warning,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.outcome_pending),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = statusColors.warning
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(Dimens.sm))
+
+            if (showNoteField) {
+                OutlinedTextField(
+                    value = noteText,
+                    onValueChange = { noteText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = enabled,
+                    label = { Text(stringResource(R.string.item_note_label)) },
+                    placeholder = {
+                        Text(stringResource(R.string.item_note_placeholder))
+                    },
+                    minLines = 2
+                )
 
                 Row(
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    Text(
-                        text = if (item.required) {
-                            stringResource(R.string.required_label)
-                        } else {
-                            stringResource(R.string.optional_label)
+                    TextButton(
+                        onClick = {
+                            onNoteChange(noteText.trim().ifBlank { null })
                         },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    if (hasSyncedPhoto) {
-                        Icon(
-                            imageVector = Icons.Outlined.CheckCircle,
-                            contentDescription = null,
-                            tint = statusColors.success,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.photo_attached),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = statusColors.success
-                        )
-                    } else if (item.required) {
-                        Icon(
-                            imageVector = Icons.Outlined.Warning,
-                            contentDescription = null,
-                            tint = statusColors.warning,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.evidence_missing),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = statusColors.warning
-                        )
+                        enabled = enabled
+                    ) {
+                        Text(stringResource(R.string.action_save_outcome))
                     }
                 }
-
-                if (serverMissingEvidence) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Outlined.Warning,
-                            contentDescription = null,
-                            tint = statusColors.error,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.server_evidence_missing),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = statusColors.error
-                        )
-                    }
+            } else {
+                TextButton(onClick = { showNoteField = true }, enabled = enabled) {
+                    Icon(
+                        imageVector = Icons.Outlined.Notes,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(stringResource(R.string.item_note_label))
                 }
             }
 
             if (item.required && !hasSyncedPhoto && onAddEvidence != null) {
-                TextButton(onClick = onAddEvidence) {
+                TextButton(onClick = onAddEvidence, enabled = enabled) {
                     Text(stringResource(R.string.add_evidence))
                 }
             }
         }
     }
+}
+
+@Composable
+private fun OutcomeChip(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        enabled = enabled,
+        label = { Text(label) }
+    )
 }
 
 @Composable
@@ -460,7 +563,10 @@ private fun PhotoViewerDialog(
     uriString: String,
     onDismiss: () -> Unit
 ) {
-    val bitmap = remember(uriString) { decodeSampledBitmap(uriString, maxDimension = 1600) }
+    val context = LocalContext.current
+    val bitmap = remember(uriString) {
+        decodeSampledBitmap(context, uriString, maxDimension = 1600)
+    }
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Column {
@@ -522,8 +628,9 @@ private fun EvidenceThumb(
         contentAlignment = Alignment.Center
     ) {
         if (isPhoto) {
+            val context = LocalContext.current
             val bitmap = remember(evidence.localUri) {
-                decodeSampledBitmap(evidence.localUri!!)
+                decodeSampledBitmap(context, evidence.localUri!!)
             }
             if (bitmap != null) {
                 Image(
@@ -556,24 +663,10 @@ private fun MissingPhotoIcon() {
     )
 }
 
-private fun decodeSampledBitmap(uriString: String, maxDimension: Int = 256): Bitmap? {
-    return try {
-        val path = uriString.removePrefix("file://")
-        if (!File(path).exists()) return null
-
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(path, bounds)
-
-        var sampleSize = 1
-        while (bounds.outWidth / sampleSize > maxDimension ||
-            bounds.outHeight / sampleSize > maxDimension
-        ) {
-            sampleSize *= 2
-        }
-
-        val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-        BitmapFactory.decodeFile(path, options)
-    } catch (_: Exception) {
-        null
-    }
+private fun decodeSampledBitmap(
+    context: android.content.Context,
+    uriString: String,
+    maxDimension: Int = 256
+): Bitmap? {
+    return EvidenceVaults.instance(context).decodeBitmap(uriString, maxDimension)
 }

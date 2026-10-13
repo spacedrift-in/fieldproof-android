@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionEntity
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
@@ -56,7 +57,8 @@ data class ConflictPresentation(
 fun describeConflict(
     operation: SyncOperationEntity,
     evidence: List<EvidenceEntity>,
-    inspection: InspectionEntity?
+    inspection: InspectionEntity?,
+    checklist: List<ChecklistItemEntity> = emptyList()
 ): ConflictPresentation {
     val serverConflict = operation.conflictDetail
         ?.let { ServerConflictParser.parse(it) }
@@ -98,6 +100,26 @@ fun describeConflict(
                 title = kind,
                 detail = "This evidence conflicts with an item already on the server.",
                 localSummary = local?.let { evidenceSummary(it) },
+                error = operation.lastError,
+                serverDetail = serverDetail,
+                serverConflict = serverConflict,
+                updatedAt = operation.updatedAt
+            )
+        }
+
+        "CHECKLIST" -> {
+            val item = checklist.firstOrNull { it.id == operation.entityId }
+            ConflictPresentation(
+                operationId = operation.id,
+                entityType = operation.entityType,
+                title = item?.title?.let { "Checklist item “$it”" } ?: "Checklist item",
+                detail = "This checklist outcome conflicts with the server's version.",
+                localSummary = item?.let {
+                    "Local outcome: ${it.outcome}" +
+                        (it.note?.takeIf { note -> note.isNotBlank() }?.let { note ->
+                            " · Note: $note"
+                        } ?: "")
+                },
                 error = operation.lastError,
                 serverDetail = serverDetail,
                 serverConflict = serverConflict,

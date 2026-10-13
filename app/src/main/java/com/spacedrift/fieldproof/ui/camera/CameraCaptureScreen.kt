@@ -9,7 +9,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.Environment
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -73,6 +72,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.spacedrift.fieldproof.R
+import com.spacedrift.fieldproof.ui.components.SecureScreen
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -98,6 +98,9 @@ fun CameraCaptureScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Prevent screenshots/recording of live evidence capture.
+    SecureScreen()
 
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var capturedUri by remember { mutableStateOf<Uri?>(null) }
@@ -641,10 +644,10 @@ private fun takePhoto(
     onCaptured: (Uri) -> Unit,
     onError: (String) -> Unit
 ) {
-    val directory = File(
-        context.getExternalFilesDir(Environment.DIRECTORY_PICTURES),
-        "fieldproof"
-    )
+    // Capture to a private cache file first. It is sealed into the encrypted
+    // evidence vault immediately after capture and the plaintext copy removed,
+    // so no plaintext photo ever lands in backed-up external storage.
+    val directory = File(context.cacheDir, "fieldproof_capture")
 
     if (!directory.exists()) {
         directory.mkdirs()

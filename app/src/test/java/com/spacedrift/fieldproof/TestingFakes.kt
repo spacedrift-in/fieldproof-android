@@ -1,5 +1,7 @@
 package com.spacedrift.fieldproof
 
+import com.spacedrift.fieldproof.data.local.ChecklistItemDao
+import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceDao
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionDao
@@ -7,6 +9,8 @@ import com.spacedrift.fieldproof.data.local.InspectionEntity
 import com.spacedrift.fieldproof.data.local.InspectionSummaryEntity
 import com.spacedrift.fieldproof.data.local.SyncOperationDao
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploadResult
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploader
 import com.spacedrift.fieldproof.data.remote.EvidenceFileReader
 import com.spacedrift.fieldproof.data.remote.EvidenceUploadResult
 import com.spacedrift.fieldproof.data.remote.EvidenceUploader
@@ -140,6 +144,19 @@ class FakeSyncOperationDao : SyncOperationDao {
         update()
     }
 
+    override suspend fun deleteForEntities(entityIds: List<String>) {
+        store.values
+            .filter { it.entityId in entityIds }
+            .map { it.id }
+            .forEach { store.remove(it) }
+        update()
+    }
+
+    override suspend fun deleteAll() {
+        store.clear()
+        update()
+    }
+
     fun get(id: String): SyncOperationEntity? = store[id]
 
     fun findByEntityId(entityId: String): SyncOperationEntity? {
@@ -164,6 +181,26 @@ class FakeEvidenceDao : EvidenceDao {
             .filter { it.inspectionId == inspectionId }
             .sortedByDescending { it.capturedAt }
         return MutableStateFlow(items)
+    }
+
+    override suspend fun getForInspection(inspectionId: String): List<EvidenceEntity> {
+        return store.values
+            .filter { it.inspectionId == inspectionId }
+            .sortedByDescending { it.capturedAt }
+    }
+
+    override suspend fun getSyncedCapturedBefore(capturedBefore: Long): List<EvidenceEntity> {
+        return store.values.filter {
+            it.syncStatus == "SYNCED" && it.capturedAt < capturedBefore && it.localUri != null
+        }
+    }
+
+    override suspend fun clearLocalUri(evidenceId: String) {
+        store[evidenceId]?.let { store[evidenceId] = it.copy(localUri = null) }
+    }
+
+    override suspend fun deleteAll() {
+        store.clear()
     }
 
     override suspend fun updateSyncStatus(evidenceId: String, status: String) {
@@ -228,7 +265,99 @@ class FakeInspectionDao : InspectionDao {
         store.remove(inspectionId)
     }
 
+    override suspend fun deleteAll() {
+        store.clear()
+    }
+
     fun get(id: String): InspectionEntity? = store[id]
+}
+
+class FakeChecklistItemDao : ChecklistItemDao {
+
+    private val store = linkedMapOf<String, ChecklistItemEntity>()
+
+    override suspend fun insertChecklistItem(item: ChecklistItemEntity) {
+        store[item.id] = item
+    }
+
+    override suspend fun insertChecklistItems(items: List<ChecklistItemEntity>) {
+        items.forEach { store[it.id] = it }
+    }
+
+    override fun observeChecklistItems(inspectionId: String): Flow<List<ChecklistItemEntity>> {
+        return MutableStateFlow(
+            store.values.filter { it.inspectionId == inspectionId }.sortedBy { it.id }
+        )
+    }
+
+    override suspend fun getChecklistItem(itemId: String): ChecklistItemEntity? = store[itemId]
+
+    override suspend fun getForInspection(inspectionId: String): List<ChecklistItemEntity> {
+        return store.values.filter { it.inspectionId == inspectionId }
+    }
+
+    override suspend fun setCompleted(itemId: String, completed: Boolean) {
+        store[itemId]?.let { store[itemId] = it.copy(completed = completed) }
+    }
+
+    override suspend fun setOutcome(
+        itemId: String,
+        outcome: String,
+        note: String?,
+        completed: Boolean,
+        syncState: String
+    ) {
+        store[itemId]?.let {
+            store[itemId] = it.copy(
+                outcome = outcome,
+                note = note,
+                completed = completed,
+                syncState = syncState
+            )
+        }
+    }
+
+    override suspend fun updateSyncState(itemId: String, syncState: String) {
+        store[itemId]?.let { store[itemId] = it.copy(syncState = syncState) }
+    }
+
+    override suspend fun markSynced(itemId: String, syncState: String, syncedVersion: Int?) {
+        store[itemId]?.let {
+            store[itemId] = it.copy(syncState = syncState, syncedVersion = syncedVersion)
+        }
+    }
+
+    override suspend fun deleteForInspection(inspectionId: String) {
+        store.values.filter { it.inspectionId == inspectionId }.map { it.id }
+            .forEach { store.remove(it) }
+    }
+
+    override suspend fun deleteAll() {
+        store.clear()
+    }
+
+    fun get(id: String): ChecklistItemEntity? = store[id]
+
+    fun snapshot(): List<ChecklistItemEntity> = store.values.toList()
+}
+
+class FakeChecklistOutcomeUploader(
+    private val outcomes: MutableList<ChecklistOutcomeUploadResult> = mutableListOf()
+) : ChecklistOutcomeUploader {
+
+    val uploaded = mutableListOf<Pair<ChecklistItemEntity, String>>()
+
+    override suspend fun uploadChecklistOutcome(
+        item: ChecklistItemEntity,
+        idempotencyKey: String
+    ): ChecklistOutcomeUploadResult {
+        uploaded.add(item to idempotencyKey)
+        return if (outcomes.isEmpty()) {
+            ChecklistOutcomeUploadResult.Success(itemVersion = 2, inspectionVersion = 2)
+        } else {
+            outcomes.removeAt(0)
+        }
+    }
 }
 
 class FakeEvidenceFileReader(
@@ -386,6 +515,28 @@ fun remoteInspection(
     version = version,
     created_at = "2026-01-01T00:00:00Z",
     updated_at = "2026-01-01T00:00:00Z"
+)
+
+fun checklistItemEntity(
+    id: String = "checklist-1",
+    inspectionId: String = "inspection-1",
+    title: String = "Fire extinguisher accessible",
+    required: Boolean = true,
+    completed: Boolean = false,
+    outcome: String = ChecklistItemEntity.OUTCOME_NOT_STARTED,
+    note: String? = null,
+    syncedVersion: Int? = null,
+    syncState: String = ChecklistItemEntity.SYNC_STATE_LOCAL
+) = ChecklistItemEntity(
+    id = id,
+    inspectionId = inspectionId,
+    title = title,
+    required = required,
+    completed = completed,
+    outcome = outcome,
+    note = note,
+    syncedVersion = syncedVersion,
+    syncState = syncState
 )
 
 fun evidenceEntity(

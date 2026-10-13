@@ -16,6 +16,8 @@ class InspectionStatus:
     ALL = {DRAFT, IN_PROGRESS, SUBMITTED, CHANGES_REQUESTED, APPROVED}
     # Statuses where new evidence may still be attached.
     EVIDENCE_EDITABLE = {DRAFT, IN_PROGRESS, CHANGES_REQUESTED}
+    # Statuses where checklist outcomes/notes may still be set.
+    CHECKLIST_EDITABLE = {DRAFT, IN_PROGRESS, CHANGES_REQUESTED}
     # Statuses from which a submission is allowed.
     SUBMITTABLE = {DRAFT, IN_PROGRESS, CHANGES_REQUESTED}
 
@@ -41,6 +43,10 @@ class ChecklistItemStatus:
     PASS = "PASS"
     FAIL = "FAIL"
     NOT_APPLICABLE = "NOT_APPLICABLE"
+
+    ALL = {NOT_STARTED, PASS, FAIL, NOT_APPLICABLE}
+    # Outcomes that satisfy the "a decision was recorded" submit rule.
+    RESOLVED = {PASS, FAIL, NOT_APPLICABLE}
 
 
 class ReviewDecision:

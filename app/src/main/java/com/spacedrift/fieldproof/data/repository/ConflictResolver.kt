@@ -1,7 +1,11 @@
 package com.spacedrift.fieldproof.data.repository
 
+import com.spacedrift.fieldproof.data.local.ChecklistItemDao
+import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceDao
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
+import com.spacedrift.fieldproof.domain.conflict.ServerConflictParser
 import java.util.UUID
 import javax.inject.Inject
 
@@ -21,31 +25,85 @@ import javax.inject.Inject
  */
 class ConflictResolver @Inject constructor(
     private val syncRepository: SyncRepository,
-    private val evidenceDao: EvidenceDao
+    private val evidenceDao: EvidenceDao,
+    private val checklistItemDao: ChecklistItemDao
 ) {
 
     suspend fun keepLocal(operation: SyncOperationEntity) {
-        if (operation.entityType == ENTITY_EVIDENCE) {
-            keepLocalEvidence(operation)
-        } else {
+        when (operation.entityType) {
+            ENTITY_EVIDENCE -> keepLocalEvidence(operation)
+            ENTITY_CHECKLIST -> keepLocalChecklist(operation)
             // Inspections (and anything else) have no duplicate-able identity, so
             // retry the existing operation in place; the local row is untouched.
-            syncRepository.requeueConflict(operation)
+            else -> syncRepository.requeueConflict(operation)
         }
     }
 
     suspend fun useServer(operation: SyncOperationEntity) {
-        if (operation.entityType == ENTITY_EVIDENCE) {
-            // Keep the user's captured evidence in the local database, but stop
-            // trying to upload it under the conflicting identity.
-            if (evidenceDao.getEvidence(operation.entityId) != null) {
-                evidenceDao.updateSyncStatus(
-                    evidenceId = operation.entityId,
-                    status = STATUS_SUPERSEDED
-                )
-            }
+        when (operation.entityType) {
+            ENTITY_EVIDENCE ->
+                // Keep the user's captured evidence in the local database, but stop
+                // trying to upload it under the conflicting identity.
+                if (evidenceDao.getEvidence(operation.entityId) != null) {
+                    evidenceDao.updateSyncStatus(
+                        evidenceId = operation.entityId,
+                        status = STATUS_SUPERSEDED
+                    )
+                }
+
+            ENTITY_CHECKLIST -> useServerChecklist(operation)
         }
         syncRepository.resolveConflict(operation)
+    }
+
+    private suspend fun keepLocalChecklist(operation: SyncOperationEntity) {
+        val item = checklistItemDao.getChecklistItem(operation.entityId)
+        if (item == null) {
+            // Nothing local left to preserve; retry in place and let the worker
+            // fail it cleanly if the item is really gone.
+            syncRepository.requeueConflict(operation)
+            return
+        }
+
+        // Adopt the server's current version as the baseline so the retried
+        // upload is accepted (expected_version matches) and the user's local
+        // outcome overwrites the server's value.
+        val serverVersion = (ServerConflictParser.parse(operation.conflictDetail)
+                as? ServerConflict.Version)
+            ?.currentVersion
+            ?: item.syncedVersion
+
+        checklistItemDao.markSynced(
+            itemId = item.id,
+            syncState = STATUS_QUEUED,
+            syncedVersion = serverVersion
+        )
+        syncRepository.requeueConflict(operation)
+    }
+
+    private suspend fun useServerChecklist(operation: SyncOperationEntity) {
+        val item = checklistItemDao.getChecklistItem(operation.entityId) ?: return
+        val conflict = ServerConflictParser.parse(operation.conflictDetail)
+
+        if (conflict is ServerConflict.Version) {
+            val serverOutcome = conflict.currentStatus
+            checklistItemDao.setOutcome(
+                itemId = item.id,
+                outcome = serverOutcome,
+                // The conflict payload does not carry the server note; keep the
+                // local note rather than discarding the user's text.
+                note = item.note,
+                completed = serverOutcome != ChecklistItemEntity.OUTCOME_NOT_STARTED,
+                syncState = STATUS_SYNCED
+            )
+            checklistItemDao.markSynced(
+                itemId = item.id,
+                syncState = STATUS_SYNCED,
+                syncedVersion = conflict.currentVersion
+            )
+        } else {
+            checklistItemDao.updateSyncState(item.id, STATUS_SYNCED)
+        }
     }
 
     private suspend fun keepLocalEvidence(operation: SyncOperationEntity) {
@@ -73,7 +131,9 @@ class ConflictResolver @Inject constructor(
 
     private companion object {
         const val ENTITY_EVIDENCE = "EVIDENCE"
+        const val ENTITY_CHECKLIST = "CHECKLIST"
         const val STATUS_QUEUED = "QUEUED"
+        const val STATUS_SYNCED = "SYNCED"
         const val STATUS_SUPERSEDED = "SUPERSEDED"
     }
 }

@@ -44,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,6 +65,7 @@ import com.spacedrift.fieldproof.ui.components.EvidenceCaptureCard
 import com.spacedrift.fieldproof.ui.components.EvidenceRow
 import com.spacedrift.fieldproof.ui.components.LoadingState
 import com.spacedrift.fieldproof.ui.components.SectionHeader
+import com.spacedrift.fieldproof.ui.components.SecureScreen
 import com.spacedrift.fieldproof.ui.components.StatusChip
 import com.spacedrift.fieldproof.ui.components.StatusTone
 import com.spacedrift.fieldproof.ui.components.SyncBadge
@@ -87,6 +89,9 @@ fun InspectionDetailScreen(
     onBack: () -> Unit,
     onCaptureForItem: (String?, String?) -> Unit
 ) {
+    // The detail screen renders captured evidence; block screenshots/recording.
+    SecureScreen()
+
     LaunchedEffect(inspectionId) {
         viewModel.openInspection(inspectionId)
     }
@@ -203,16 +208,25 @@ private fun DetailContent(
     val inspectionSynced = inspectionOperation?.status == "SYNCED" ||
         inspectionOperation?.status == "RESOLVED"
     val evidenceSynced = evidence.all { ev -> ev.isResolvedForSubmission() }
+    val requiredOutcomesComplete = requiredItems.all {
+        it.outcome != ChecklistItemEntity.OUTCOME_NOT_STARTED
+    }
     val serverRejected = workflow.missingEvidenceItemIds.isNotEmpty()
-    val canSubmit = requiredEvidenceComplete && inspectionSynced && evidenceSynced && !serverRejected
+    val canSubmit = requiredEvidenceComplete &&
+        requiredOutcomesComplete &&
+        inspectionSynced &&
+        evidenceSynced &&
+        !serverRejected
 
     val conflictPresentations = conflicts
         .filter { operation ->
             (operation.entityType == "INSPECTION" && operation.entityId == inspectionId) ||
                 (operation.entityType == "EVIDENCE" &&
-                    evidence.any { it.id == operation.entityId })
+                    evidence.any { it.id == operation.entityId }) ||
+                (operation.entityType == "CHECKLIST" &&
+                    checklist.any { it.id == operation.entityId })
         }
-        .map { operation -> describeConflict(operation, evidence, inspection) }
+        .map { operation -> describeConflict(operation, evidence, inspection, checklist) }
 
     val syncSummary: SyncSummary = deriveSyncSummary(syncOperations, isOnline)
 
@@ -378,8 +392,11 @@ private fun DetailContent(
                     hasSyncedPhoto = evidence.any {
                         it.checklistItemId == item.id && it.type == "PHOTO" && it.syncStatus == "SYNCED"
                     },
-                    onCheckedChange = { checked ->
-                        viewModel.completeChecklistItem(item.id, checked)
+                    onOutcomeChange = { outcome ->
+                        viewModel.setChecklistOutcome(item.id, outcome, item.note)
+                    },
+                    onNoteChange = { note ->
+                        viewModel.setChecklistOutcome(item.id, item.outcome, note)
                     },
                     onAddEvidence = if (item.required) {
                         { onCaptureForItem(item.id, item.title) }
@@ -510,6 +527,7 @@ private fun DetailContent(
                                 canSubmit = canSubmit,
                                 inspectionSynced = inspectionSynced,
                                 requiredEvidenceComplete = requiredEvidenceComplete,
+                                requiredOutcomesComplete = requiredOutcomesComplete,
                                 evidenceSynced = evidenceSynced,
                                 serverRejected = serverRejected
                             ),
@@ -575,6 +593,7 @@ private fun submitHint(
     canSubmit: Boolean,
     inspectionSynced: Boolean,
     requiredEvidenceComplete: Boolean,
+    requiredOutcomesComplete: Boolean,
     evidenceSynced: Boolean,
     serverRejected: Boolean
 ): String? {
@@ -587,6 +606,8 @@ private fun submitHint(
             "The inspection must sync first. Wait for sync or tap Retry sync."
         !requiredEvidenceComplete ->
             "Attach a photo to every required checklist item before submitting."
+        !requiredOutcomesComplete ->
+            "Record a Pass, Fail or N/A outcome for every required item before submitting."
         !evidenceSynced ->
             "Wait for all evidence to sync, then try again."
         else -> "Not ready to submit yet."
@@ -783,6 +804,7 @@ internal fun ReportCardSection(
     loadPdf: suspend () -> WorkflowResult<ByteArray>
 ) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
 
     var pdfBusy by remember { mutableStateOf(false) }
@@ -799,9 +821,9 @@ internal fun ReportCardSection(
                 context.contentResolver.openOutputStream(uri)?.use { output ->
                     output.write(bytes)
                 }
-                pdfMessage = context.getString(R.string.report_pdf_exported)
+                pdfMessage = resources.getString(R.string.report_pdf_exported)
             } catch (exception: Exception) {
-                pdfMessage = context.getString(
+                pdfMessage = resources.getString(
                     R.string.report_pdf_failed,
                     exception.message ?: "unknown error"
                 )
@@ -864,7 +886,7 @@ internal fun ReportCardSection(
                                             result.value
                                         )
                                         if (!ReportPdfExporter.open(context, file)) {
-                                            pdfMessage = context.getString(
+                                            pdfMessage = resources.getString(
                                                 R.string.report_pdf_no_viewer
                                             )
                                         }

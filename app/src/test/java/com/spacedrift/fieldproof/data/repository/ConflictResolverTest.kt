@@ -1,11 +1,16 @@
 package com.spacedrift.fieldproof.data.repository
 
+import com.spacedrift.fieldproof.FakeChecklistItemDao
+import com.spacedrift.fieldproof.FakeChecklistOutcomeUploader
 import com.spacedrift.fieldproof.FakeEvidenceDao
 import com.spacedrift.fieldproof.FakeEvidenceUploader
 import com.spacedrift.fieldproof.FakeInspectionDao
 import com.spacedrift.fieldproof.FakeInspectionUploader
 import com.spacedrift.fieldproof.FakeSyncOperationDao
+import com.spacedrift.fieldproof.checklistItemEntity
+import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
+import com.spacedrift.fieldproof.domain.conflict.ServerConflictParser
 import com.spacedrift.fieldproof.evidenceEntity
 import com.spacedrift.fieldproof.inspectionEntity
 import com.spacedrift.fieldproof.sync.SyncRunner
@@ -21,8 +26,9 @@ class ConflictResolverTest {
     private val syncDao = FakeSyncOperationDao()
     private val inspectionDao = FakeInspectionDao()
     private val evidenceDao = FakeEvidenceDao()
+    private val checklistItemDao = FakeChecklistItemDao()
     private val syncRepository = SyncRepository(syncDao)
-    private val resolver = ConflictResolver(syncRepository, evidenceDao)
+    private val resolver = ConflictResolver(syncRepository, evidenceDao, checklistItemDao)
 
     private suspend fun conflictedEvidence(evidenceId: String = "e1"): SyncOperationEntity {
         val evidence = evidenceEntity(
@@ -110,13 +116,72 @@ class ConflictResolverTest {
             syncRepository = syncRepository,
             inspectionDao = inspectionDao,
             evidenceDao = evidenceDao,
+            checklistItemDao = checklistItemDao,
             inspectionUploader = FakeInspectionUploader(),
-            uploader = FakeEvidenceUploader()
+            uploader = FakeEvidenceUploader(),
+            checklistOutcomeUploader = FakeChecklistOutcomeUploader()
         )
 
         runner.run()
 
         assertEquals("SYNCED", evidenceDao.get(rekeyedId)!!.syncStatus)
         assertNull(evidenceDao.get("e1"))
+    }
+
+    private suspend fun conflictedChecklist(
+        itemId: String = "c1",
+        serverConflictJson: String
+    ): SyncOperationEntity {
+        checklistItemDao.insertChecklistItem(
+            checklistItemEntity(
+                id = itemId,
+                inspectionId = "i1",
+                outcome = ChecklistItemEntity.OUTCOME_PASS,
+                completed = true,
+                note = "Local note",
+                syncState = ChecklistItemEntity.SYNC_STATE_CONFLICT
+            )
+        )
+        inspectionDao.insertInspection(inspectionEntity(id = "i1"))
+        syncRepository.queueChecklistOutcome(itemId)
+        val operation = syncDao.findByEntityId(itemId)!!
+        syncRepository.markConflict(operation, ServerConflictParser.parse(serverConflictJson))
+        return syncDao.findByEntityId(itemId)!!
+    }
+
+    @Test
+    fun `keep local checklist adopts server version and requeues`() = runBlocking {
+        val conflict = conflictedChecklist(
+            serverConflictJson =
+                """{"detail":{"message":"conflict","current_version":5,"current_status":"FAIL"}}"""
+        )
+
+        resolver.keepLocal(conflict)
+
+        val item = checklistItemDao.get("c1")!!
+        assertEquals(5, item.syncedVersion)
+        assertEquals(ChecklistItemEntity.SYNC_STATE_QUEUED, item.syncState)
+        // Local outcome is preserved for the retried upload.
+        assertEquals(ChecklistItemEntity.OUTCOME_PASS, item.outcome)
+
+        val requeued = syncDao.findByEntityId("c1")!!
+        assertEquals("QUEUED", requeued.status)
+        assertEquals(0, requeued.attempts)
+    }
+
+    @Test
+    fun `use server checklist adopts the server outcome and resolves`() = runBlocking {
+        val conflict = conflictedChecklist(
+            serverConflictJson =
+                """{"detail":{"message":"conflict","current_version":5,"current_status":"FAIL"}}"""
+        )
+
+        resolver.useServer(conflict)
+
+        val item = checklistItemDao.get("c1")!!
+        assertEquals(ChecklistItemEntity.OUTCOME_FAIL, item.outcome)
+        assertEquals(5, item.syncedVersion)
+        assertEquals(ChecklistItemEntity.SYNC_STATE_SYNCED, item.syncState)
+        assertEquals("RESOLVED", syncDao.get(conflict.id)!!.status)
     }
 }

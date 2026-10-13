@@ -5,6 +5,36 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+// --- Release signing -------------------------------------------------------
+// The upload keystore is NEVER committed. CI injects credentials via protected
+// environment secrets (see .github/workflows/release.yml and fieldproof-starter/docs/release.md);
+// locally you can point the same Gradle properties at a throwaway keystore.
+// When no keystore is configured the release build is left unsigned so that a
+// bare `./gradlew :app:assembleRelease` still works for smoke testing.
+fun envOrProperty(env: String, property: String): String? =
+    System.getenv(env)?.takeIf { it.isNotBlank() }
+        ?: (project.findProperty(property) as String?)?.takeIf { it.isNotBlank() }
+
+val uploadKeystorePath = envOrProperty(
+    "FIELD_PROOF_UPLOAD_KEYSTORE_PATH", "fieldproof.upload.keystorePath",
+)
+val uploadKeystoreFile = uploadKeystorePath?.let { file(it) }?.takeIf { it.exists() }
+val requireSigning = (project.findProperty("fieldproof.requireSigning") as String?)
+    ?.toBoolean() ?: false
+
+if (requireSigning && uploadKeystoreFile == null) {
+    throw GradleException(
+        "Release signing was requested (fieldproof.requireSigning=true) but no " +
+            "upload keystore was found. Set FIELD_PROOF_UPLOAD_KEYSTORE_PATH (and " +
+            "the password/alias variables) — see fieldproof-starter/docs/release.md.",
+    )
+}
+
+val appVersionCode = envOrProperty("FIELD_PROOF_VERSION_CODE", "fieldproof.versionCode")
+    ?.toIntOrNull() ?: 1
+val appVersionName = envOrProperty("FIELD_PROOF_VERSION_NAME", "fieldproof.versionName")
+    ?: "1.0"
+
 android {
     namespace = "com.spacedrift.fieldproof"
     compileSdk {
@@ -15,10 +45,31 @@ android {
         applicationId = "com.spacedrift.fieldproof"
         minSdk = 24
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (uploadKeystoreFile != null) {
+            create("release") {
+                storeFile = uploadKeystoreFile
+                storePassword = envOrProperty(
+                    "FIELD_PROOF_UPLOAD_KEYSTORE_PASSWORD",
+                    "fieldproof.upload.keystorePassword",
+                )
+                keyAlias = envOrProperty(
+                    "FIELD_PROOF_UPLOAD_KEY_ALIAS", "fieldproof.upload.keyAlias",
+                )
+                keyPassword = envOrProperty(
+                    "FIELD_PROOF_UPLOAD_KEY_PASSWORD", "fieldproof.upload.keyPassword",
+                )
+                // Play requires JAR (v1) + APK Signature Scheme v2 for the AAB/APK.
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
     }
 
     buildTypes {
@@ -27,6 +78,9 @@ android {
                 enable = true
                 packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
             }
+            // Null when no upload keystore is configured → unsigned local build.
+            signingConfig = signingConfigs.findByName("release")
+            isDebuggable = false
         }
     }
     compileOptions {
@@ -35,6 +89,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     testOptions {
         unitTests {

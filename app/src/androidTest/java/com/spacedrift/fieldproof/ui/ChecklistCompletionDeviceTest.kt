@@ -2,7 +2,6 @@ package com.spacedrift.fieldproof.ui
 
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -17,7 +16,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Device/emulator UI tests for checklist item completion and its evidence state.
+ * Device/emulator UI tests for checklist outcome capture and its evidence state.
  */
 @RunWith(AndroidJUnit4::class)
 class ChecklistCompletionDeviceTest {
@@ -25,32 +24,76 @@ class ChecklistCompletionDeviceTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
 
-    private fun item(required: Boolean = true, completed: Boolean = false) = ChecklistItemEntity(
+    private fun item(
+        required: Boolean = true,
+        completed: Boolean = false,
+        outcome: String = ChecklistItemEntity.OUTCOME_NOT_STARTED
+    ) = ChecklistItemEntity(
         id = "c1",
         inspectionId = "i1",
         title = "Fire extinguisher present",
         required = required,
-        completed = completed
+        completed = completed,
+        outcome = outcome
     )
 
     @Test
-    fun togglingCheckbox_reportsNewCompletion() {
-        var toggled: Boolean? = null
+    fun selectingPass_reportsOutcome() {
+        var selected: String? = null
         composeRule.setContent {
             FieldProofTheme {
                 ChecklistItemRow(
                     item = item(),
                     hasSyncedPhoto = false,
-                    onCheckedChange = { toggled = it },
+                    onOutcomeChange = { selected = it },
+                    onNoteChange = {},
                     onAddEvidence = {}
                 )
             }
         }
 
         composeRule.onNodeWithText("Fire extinguisher present").assertIsDisplayed()
-        composeRule.onNode(isToggleable()).performClick()
+        composeRule.onNodeWithText("Pass").performClick()
 
-        assertEquals(true, toggled)
+        assertEquals(ChecklistItemEntity.OUTCOME_PASS, selected)
+    }
+
+    @Test
+    fun requiredItemWithoutOutcome_showsOutcomeNeeded() {
+        composeRule.setContent {
+            FieldProofTheme {
+                ChecklistItemRow(
+                    item = item(),
+                    hasSyncedPhoto = false,
+                    onOutcomeChange = {},
+                    onNoteChange = {},
+                    onAddEvidence = {}
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Outcome needed").assertIsDisplayed()
+    }
+
+    @Test
+    fun savingBlankNote_reportsNull() {
+        var note: String? = "unset"
+        composeRule.setContent {
+            FieldProofTheme {
+                ChecklistItemRow(
+                    item = item(),
+                    hasSyncedPhoto = false,
+                    onOutcomeChange = {},
+                    onNoteChange = { note = it },
+                    onAddEvidence = {}
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Item note").performClick()
+        composeRule.onNodeWithText("Save").performClick()
+
+        assertEquals(null, note)
     }
 
     @Test
@@ -61,7 +104,8 @@ class ChecklistCompletionDeviceTest {
                 ChecklistItemRow(
                     item = item(),
                     hasSyncedPhoto = false,
-                    onCheckedChange = {},
+                    onOutcomeChange = {},
+                    onNoteChange = {},
                     onAddEvidence = { addEvidence = true }
                 )
             }
@@ -79,9 +123,10 @@ class ChecklistCompletionDeviceTest {
         composeRule.setContent {
             FieldProofTheme {
                 ChecklistItemRow(
-                    item = item(completed = true),
+                    item = item(completed = true, outcome = ChecklistItemEntity.OUTCOME_PASS),
                     hasSyncedPhoto = true,
-                    onCheckedChange = {},
+                    onOutcomeChange = {},
+                    onNoteChange = {},
                     onAddEvidence = {}
                 )
             }
@@ -98,7 +143,8 @@ class ChecklistCompletionDeviceTest {
                 ChecklistItemRow(
                     item = item(required = false),
                     hasSyncedPhoto = false,
-                    onCheckedChange = {},
+                    onOutcomeChange = {},
+                    onNoteChange = {},
                     onAddEvidence = null
                 )
             }
@@ -114,9 +160,10 @@ class ChecklistCompletionDeviceTest {
         composeRule.setContent {
             FieldProofTheme {
                 ChecklistItemRow(
-                    item = item(completed = true),
+                    item = item(completed = true, outcome = ChecklistItemEntity.OUTCOME_PASS),
                     hasSyncedPhoto = true,
-                    onCheckedChange = {},
+                    onOutcomeChange = {},
+                    onNoteChange = {},
                     onAddEvidence = {},
                     serverMissingEvidence = true
                 )
@@ -133,7 +180,8 @@ class ChecklistCompletionDeviceTest {
                 ChecklistItemRow(
                     item = item(),
                     hasSyncedPhoto = false,
-                    onCheckedChange = {},
+                    onOutcomeChange = {},
+                    onNoteChange = {},
                     onAddEvidence = {}
                 )
             }

@@ -63,6 +63,37 @@ def _required_items(client, inspection_id):
     return [item for item in payload["checklist_items"] if item["required"]]
 
 
+def _checklist_items(client, inspection_id):
+    return _get(client, inspection_id).json()["checklist_items"]
+
+
+def _set_outcome(
+    client,
+    inspection_id,
+    item_id,
+    status,
+    *,
+    note=None,
+    expected_version=None,
+):
+    body = {"status": status}
+    if note is not None:
+        body["note"] = note
+    if expected_version is not None:
+        body["expected_version"] = expected_version
+    return client.put(
+        f"/api/v1/inspections/{inspection_id}/checklist/{item_id}",
+        json=body,
+    )
+
+
+def _record_required_outcomes(client, inspection_id):
+    for item in _required_items(client, inspection_id):
+        response = _set_outcome(client, inspection_id, item["id"], "PASS")
+        assert response.status_code == 200
+    return inspection_id
+
+
 # ---------------------------------------------------------------------------
 # Creation + idempotency
 # ---------------------------------------------------------------------------
@@ -280,6 +311,29 @@ def test_submit_blocked_without_required_evidence(client):
     detail = response.json()["detail"]
     assert len(detail["missing_checklist_item_ids"]) == 2
 
+    # Field errors are actionable: each names the offending field and a code.
+    errors = detail["errors"]
+    codes = {error["code"] for error in errors}
+    assert "MISSING_REQUIRED_EVIDENCE" in codes
+    assert "OUTCOME_REQUIRED" in codes
+    for error in errors:
+        assert error["field"].startswith("checklist_items.")
+        assert error["message"]
+
+
+def test_submit_blocked_when_required_item_has_no_outcome(client):
+    _, inspection_id, _, _ = _create(client)
+    for item in _required_items(client, inspection_id):
+        _upload(client, inspection_id, item["id"], key=str(uuid.uuid4()), evidence_id=uuid.uuid4())
+
+    response = client.post(f"/api/v1/inspections/{inspection_id}/submit", json={})
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    # Evidence is present, so the only remaining field errors are missing outcomes.
+    assert detail["missing_checklist_item_ids"] == []
+    assert {error["code"] for error in detail["errors"]} == {"OUTCOME_REQUIRED"}
+    assert len(detail["errors"]) == 2
+
 
 def test_submit_then_double_submit_conflicts(client):
     _, inspection_id, _, _ = _create(client)
@@ -287,6 +341,7 @@ def test_submit_then_double_submit_conflicts(client):
         assert _upload(
             client, inspection_id, item["id"], key=str(uuid.uuid4()), evidence_id=uuid.uuid4()
         ).status_code == 201
+    _record_required_outcomes(client, inspection_id)
 
     first = client.post(f"/api/v1/inspections/{inspection_id}/submit", json={})
     assert first.status_code == 200
@@ -306,6 +361,127 @@ def test_submit_version_conflict(client):
 
 
 # ---------------------------------------------------------------------------
+# Checklist outcomes
+# ---------------------------------------------------------------------------
+
+def test_checklist_outcome_persists_status_and_note(client):
+    _, inspection_id, _, _ = _create(client)
+    item = _checklist_items(client, inspection_id)[0]
+
+    response = _set_outcome(
+        client,
+        inspection_id,
+        item["id"],
+        "FAIL",
+        note="  Loose handrail  ",
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["item"]["status"] == "FAIL"
+    assert body["item"]["note"] == "Loose handrail"
+    assert body["item"]["version"] == item["version"] + 1
+
+    fetched = {i["id"]: i for i in _checklist_items(client, inspection_id)}
+    assert fetched[item["id"]]["status"] == "FAIL"
+    assert fetched[item["id"]]["note"] == "Loose handrail"
+
+
+def test_checklist_outcome_replay_is_idempotent(client):
+    _, inspection_id, _, _ = _create(client)
+    item = _checklist_items(client, inspection_id)[0]
+
+    first = _set_outcome(client, inspection_id, item["id"], "PASS", note="Clear")
+    assert first.status_code == 200
+    version = first.json()["item"]["version"]
+
+    replay = _set_outcome(client, inspection_id, item["id"], "PASS", note="Clear")
+    assert replay.status_code == 200
+    # No version bump and the inspection version is unchanged on a replay.
+    assert replay.json()["item"]["version"] == version
+    assert replay.json()["inspection_version"] == first.json()["inspection_version"]
+
+
+def test_checklist_outcome_version_conflict(client):
+    _, inspection_id, _, _ = _create(client)
+    item = _checklist_items(client, inspection_id)[0]
+
+    # Optimistic concurrency: a stale expected_version is rejected with the
+    # server's current item version so the client can resolve the conflict.
+    conflict = _set_outcome(
+        client,
+        inspection_id,
+        item["id"],
+        "PASS",
+        expected_version=999,
+    )
+    assert conflict.status_code == 409
+    detail = conflict.json()["detail"]
+    assert detail["current_version"] == item["version"]
+    assert detail["checklist_item_id"] == item["id"]
+
+    # A correct expected_version succeeds and is reusable for a retry.
+    ok = _set_outcome(
+        client,
+        inspection_id,
+        item["id"],
+        "PASS",
+        expected_version=item["version"],
+    )
+    assert ok.status_code == 200
+
+
+def test_checklist_outcome_rejects_unknown_item(client):
+    _, inspection_id, _, _ = _create(client)
+    response = _set_outcome(client, inspection_id, str(uuid.uuid4()), "PASS")
+    assert response.status_code == 404
+
+
+def test_checklist_outcome_rejected_after_submission(client):
+    inspection_id = _submit_ready_inspection(client)
+    item = _required_items(client, inspection_id)[0]
+
+    response = _set_outcome(client, inspection_id, item["id"], "FAIL")
+    assert response.status_code == 409
+
+
+def test_report_totals_reflect_synced_outcomes(client):
+    _, inspection_id, _, _ = _create(client)
+    required = _required_items(client, inspection_id)
+    optional = [
+        item for item in _checklist_items(client, inspection_id) if not item["required"]
+    ]
+
+    for item in required:
+        _upload(client, inspection_id, item["id"], key=str(uuid.uuid4()), evidence_id=uuid.uuid4())
+
+    _set_outcome(client, inspection_id, required[0]["id"], "PASS")
+    _set_outcome(client, inspection_id, required[1]["id"], "FAIL", note="Blocked by stock")
+    assert _set_outcome(client, inspection_id, optional[0]["id"], "NOT_APPLICABLE")
+
+    submit = client.post(f"/api/v1/inspections/{inspection_id}/submit", json={})
+    assert submit.status_code == 200
+    review = client.post(
+        f"/api/v1/inspections/{inspection_id}/review",
+        json={"decision": "approved", "comment": "Reviewed"},
+    )
+    assert review.status_code == 200
+
+    report = client.get(f"/api/v1/inspections/{inspection_id}/report")
+    assert report.status_code == 200
+    summary = report.json()["summary"]
+    assert summary["passed"] == 1
+    assert summary["failed"] == 1
+    assert summary["not_applicable"] == 1
+    assert summary["not_started"] == 0
+
+    # PDF generation reflects the same synced outcomes.
+    pdf = client.get(f"/api/v1/inspections/{inspection_id}/report.pdf")
+    assert pdf.status_code == 200
+    assert pdf.content.startswith(b"%PDF")
+
+
+# ---------------------------------------------------------------------------
 # Review
 # ---------------------------------------------------------------------------
 
@@ -313,6 +489,7 @@ def _submit_ready_inspection(client):
     _, inspection_id, _, _ = _create(client)
     for item in _required_items(client, inspection_id):
         _upload(client, inspection_id, item["id"], key=str(uuid.uuid4()), evidence_id=uuid.uuid4())
+    _record_required_outcomes(client, inspection_id)
     client.post(f"/api/v1/inspections/{inspection_id}/submit", json={})
     return inspection_id
 
@@ -343,6 +520,7 @@ def test_review_approve_and_report(client):
     payload = report.json()
     assert payload["status"] == "APPROVED"
     assert payload["summary"]["evidence_count"] == 2
+    assert payload["summary"]["passed"] == 2
     assert payload["review"]["decision"] == "approved"
 
     # Evidence can no longer be attached once approved.

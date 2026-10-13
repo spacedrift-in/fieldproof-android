@@ -1,12 +1,17 @@
 package com.spacedrift.fieldproof.sync
 
+import com.spacedrift.fieldproof.FakeChecklistItemDao
+import com.spacedrift.fieldproof.FakeChecklistOutcomeUploader
 import com.spacedrift.fieldproof.FakeEvidenceDao
 import com.spacedrift.fieldproof.FakeEvidenceUploader
 import com.spacedrift.fieldproof.FakeInspectionDao
 import com.spacedrift.fieldproof.FakeInspectionUploader
 import com.spacedrift.fieldproof.FakeSyncOperationDao
+import com.spacedrift.fieldproof.checklistItemEntity
+import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploadResult
 import com.spacedrift.fieldproof.data.remote.EvidenceUploadResult
 import com.spacedrift.fieldproof.data.remote.InspectionUploadResult
 import com.spacedrift.fieldproof.data.repository.SyncRepository
@@ -24,17 +29,21 @@ class SyncRunnerTest {
     private val syncDao = FakeSyncOperationDao()
     private val inspectionDao = FakeInspectionDao()
     private val evidenceDao = FakeEvidenceDao()
+    private val checklistItemDao = FakeChecklistItemDao()
     private val syncRepository = SyncRepository(syncDao)
 
     private fun runner(
         uploader: FakeEvidenceUploader,
-        inspectionUploader: FakeInspectionUploader = FakeInspectionUploader()
+        inspectionUploader: FakeInspectionUploader = FakeInspectionUploader(),
+        checklistUploader: FakeChecklistOutcomeUploader = FakeChecklistOutcomeUploader()
     ) = SyncRunner(
         syncRepository = syncRepository,
         inspectionDao = inspectionDao,
         evidenceDao = evidenceDao,
+        checklistItemDao = checklistItemDao,
         inspectionUploader = inspectionUploader,
-        uploader = uploader
+        uploader = uploader,
+        checklistOutcomeUploader = checklistUploader
     )
 
     private suspend fun markInspectionSynced(inspectionId: String) {
@@ -48,6 +57,13 @@ class SyncRunnerTest {
         markInspectionSynced(evidence.inspectionId)
         syncRepository.queueEvidence(evidence.id)
         return syncDao.findByEntityId(evidence.id)!!
+    }
+
+    private suspend fun queueChecklist(item: ChecklistItemEntity): SyncOperationEntity {
+        checklistItemDao.insertChecklistItem(item)
+        markInspectionSynced(item.inspectionId)
+        syncRepository.queueChecklistOutcome(item.id)
+        return syncDao.findByEntityId(item.id)!!
     }
 
     @Test
@@ -230,8 +246,8 @@ class SyncRunnerTest {
             SyncOperationEntity(
                 id = UUID.randomUUID().toString(),
                 entityId = "x",
-                entityType = "CHECKLIST",
-                operationType = "UPDATE",
+                entityType = "TEMPLATE",
+                operationType = "UPSERT",
                 status = "QUEUED",
                 attempts = 0,
                 lastError = null,
@@ -347,5 +363,135 @@ class SyncRunnerTest {
             runner(FakeEvidenceUploader()).run()
         }
         assertEquals(SyncRunResult.AllDone, result)
+    }
+
+    @Test
+    fun `checklist outcome sync marks item and operation synced`() = runBlocking {
+        val checklistUploader = FakeChecklistOutcomeUploader()
+        val item = checklistItemEntity(
+            id = "c1",
+            inspectionId = "i1",
+            outcome = ChecklistItemEntity.OUTCOME_PASS,
+            completed = true,
+            syncState = ChecklistItemEntity.SYNC_STATE_QUEUED
+        )
+        queueChecklist(item)
+
+        val result = runner(FakeEvidenceUploader(), checklistUploader = checklistUploader).run()
+
+        assertEquals(SyncRunResult.AllDone, result)
+        assertEquals("SYNCED", syncDao.findByEntityId("c1")!!.status)
+        assertEquals(ChecklistItemEntity.SYNC_STATE_SYNCED, checklistItemDao.get("c1")!!.syncState)
+        assertEquals(2, checklistItemDao.get("c1")!!.syncedVersion)
+        // Idempotency key is the checklist item id, making replays deterministic.
+        assertEquals("c1", checklistUploader.uploaded.single().second)
+    }
+
+    @Test
+    fun `checklist retryable failure keeps operation queued then retry succeeds`() = runBlocking {
+        val checklistUploader = FakeChecklistOutcomeUploader(
+            mutableListOf(
+                ChecklistOutcomeUploadResult.Failed(retryable = true, message = "offline")
+            )
+        )
+        val item = checklistItemEntity(
+            id = "c1",
+            inspectionId = "i1",
+            outcome = ChecklistItemEntity.OUTCOME_FAIL,
+            completed = true,
+            syncState = ChecklistItemEntity.SYNC_STATE_QUEUED
+        )
+        queueChecklist(item)
+
+        val first = runner(FakeEvidenceUploader(), checklistUploader = checklistUploader).run()
+
+        assertEquals(SyncRunResult.Retry, first)
+        assertEquals("QUEUED", syncDao.findByEntityId("c1")!!.status)
+        assertEquals(ChecklistItemEntity.SYNC_STATE_QUEUED, checklistItemDao.get("c1")!!.syncState)
+        assertEquals(1, syncDao.findByEntityId("c1")!!.attempts)
+
+        val second = runner(FakeEvidenceUploader(), checklistUploader = checklistUploader).run()
+
+        assertEquals(SyncRunResult.AllDone, second)
+        assertEquals("SYNCED", syncDao.findByEntityId("c1")!!.status)
+        assertEquals(ChecklistItemEntity.SYNC_STATE_SYNCED, checklistItemDao.get("c1")!!.syncState)
+    }
+
+    @Test
+    fun `checklist conflict marks item on conflict`() = runBlocking {
+        val checklistUploader = FakeChecklistOutcomeUploader(
+            mutableListOf(
+                ChecklistOutcomeUploadResult.Conflict(
+                    testConflict(message = "Expected version 1 but server is at version 2.")
+                )
+            )
+        )
+        val item = checklistItemEntity(
+            id = "c1",
+            inspectionId = "i1",
+            outcome = ChecklistItemEntity.OUTCOME_PASS,
+            completed = true,
+            syncState = ChecklistItemEntity.SYNC_STATE_QUEUED
+        )
+        queueChecklist(item)
+
+        val result = runner(FakeEvidenceUploader(), checklistUploader = checklistUploader).run()
+
+        assertEquals(SyncRunResult.AllDone, result)
+        assertEquals("CONFLICT", syncDao.findByEntityId("c1")!!.status)
+        assertEquals(ChecklistItemEntity.SYNC_STATE_CONFLICT, checklistItemDao.get("c1")!!.syncState)
+    }
+
+    @Test
+    fun `checklist outcome waits until its inspection is synced`() = runBlocking {
+        val inspectionUploader = FakeInspectionUploader(
+            mutableListOf(
+                InspectionUploadResult.Failed(retryable = true, message = "offline")
+            )
+        )
+        val checklistUploader = FakeChecklistOutcomeUploader()
+        inspectionDao.insertInspection(inspectionEntity(id = "i1"))
+        syncRepository.queueInspection("i1")
+        checklistItemDao.insertChecklistItem(
+            checklistItemEntity(
+                id = "c1",
+                inspectionId = "i1",
+                outcome = ChecklistItemEntity.OUTCOME_PASS,
+                completed = true,
+                syncState = ChecklistItemEntity.SYNC_STATE_QUEUED
+            )
+        )
+        syncRepository.queueChecklistOutcome("c1")
+
+        val first = runner(
+            FakeEvidenceUploader(),
+            inspectionUploader = inspectionUploader,
+            checklistUploader = checklistUploader
+        ).run()
+
+        assertEquals(SyncRunResult.Retry, first)
+        assertTrue(checklistUploader.uploaded.isEmpty())
+        assertEquals("QUEUED", syncDao.findByEntityId("c1")!!.status)
+
+        val second = runner(
+            FakeEvidenceUploader(),
+            inspectionUploader = inspectionUploader,
+            checklistUploader = checklistUploader
+        ).run()
+
+        assertEquals(SyncRunResult.AllDone, second)
+        assertEquals("SYNCED", syncDao.findByEntityId("i1")!!.status)
+        assertEquals("SYNCED", syncDao.findByEntityId("c1")!!.status)
+        assertEquals(1, checklistUploader.uploaded.size)
+    }
+
+    @Test
+    fun `queued checklist operation with missing item is failed`() = runBlocking {
+        syncRepository.queueChecklistOutcome("does-not-exist")
+
+        val result = runner(FakeEvidenceUploader()).run()
+
+        assertEquals(SyncRunResult.AllDone, result)
+        assertEquals("FAILED", syncDao.findByEntityId("does-not-exist")!!.status)
     }
 }

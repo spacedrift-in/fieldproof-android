@@ -1,5 +1,6 @@
 package com.spacedrift.fieldproof.di
 
+import com.spacedrift.fieldproof.BuildConfig
 import com.spacedrift.fieldproof.data.remote.FieldProofApi
 import dagger.Module
 import dagger.Provides
@@ -21,7 +22,14 @@ object NetworkModule {
     @Singleton
     fun provideLoggingInterceptor(): HttpLoggingInterceptor {
         return HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
+            // Never log request/response metadata in release builds: inspection
+            // and evidence URLs are sensitive. Debug builds get method/URL/status
+            // only — never bodies.
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.BASIC
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
         }
     }
 

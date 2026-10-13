@@ -1,7 +1,11 @@
 package com.spacedrift.fieldproof.data.repository
 
+import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionEntity
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeRequest
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploadResult
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploader
 import com.spacedrift.fieldproof.data.remote.CreateInspectionRequest
 import com.spacedrift.fieldproof.data.remote.EvidenceFileReader
 import com.spacedrift.fieldproof.data.remote.EvidencePartsResult
@@ -30,7 +34,7 @@ import javax.inject.Inject
 class RemoteRepository @Inject constructor(
     private val api: FieldProofApi,
     private val fileReader: EvidenceFileReader
-) : EvidenceUploader, InspectionUploader, InspectionWorkflowClient {
+) : EvidenceUploader, InspectionUploader, InspectionWorkflowClient, ChecklistOutcomeUploader {
 
     suspend fun health(): HealthResponse {
         return api.health()
@@ -125,6 +129,55 @@ class RemoteRepository @Inject constructor(
                     idempotencyKey = idempotencyKey
                 )
             }
+        }
+    }
+
+    override suspend fun uploadChecklistOutcome(
+        item: ChecklistItemEntity,
+        idempotencyKey: String
+    ): ChecklistOutcomeUploadResult {
+        return try {
+            val response = api.updateChecklistOutcome(
+                inspectionId = item.inspectionId,
+                checklistItemId = item.id,
+                request = ChecklistOutcomeRequest(
+                    status = item.outcome,
+                    note = item.note,
+                    expected_version = item.syncedVersion
+                )
+            )
+            ChecklistOutcomeUploadResult.Success(
+                itemVersion = response.item.version,
+                inspectionVersion = response.inspection_version
+            )
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: HttpException) {
+            when {
+                exception.code() == 409 -> ChecklistOutcomeUploadResult.Conflict(
+                    serverConflict = parseConflict(exception)
+                )
+
+                exception.code() >= 500 -> ChecklistOutcomeUploadResult.Failed(
+                    retryable = true,
+                    message = "Server error (${exception.code()}): ${exception.message()}"
+                )
+
+                else -> ChecklistOutcomeUploadResult.Failed(
+                    retryable = false,
+                    message = "Outcome rejected (${exception.code()}): ${exception.message()}"
+                )
+            }
+        } catch (exception: IOException) {
+            ChecklistOutcomeUploadResult.Failed(
+                retryable = true,
+                message = "Network error: ${exception.message ?: "unreachable"}"
+            )
+        } catch (exception: Exception) {
+            ChecklistOutcomeUploadResult.Failed(
+                retryable = false,
+                message = exception.message ?: "Unknown outcome error"
+            )
         }
     }
 

@@ -55,7 +55,8 @@ class InspectionViewModelSubmitValidationTest {
         )
         val conflictResolver = ConflictResolver(
             syncRepository = syncRepository,
-            evidenceDao = db.evidenceDao()
+            evidenceDao = db.evidenceDao(),
+            checklistItemDao = db.checklistItemDao()
         )
         workflowClient = FakeInspectionWorkflowClient()
 
