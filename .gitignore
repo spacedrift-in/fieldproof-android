@@ -24,3 +24,21 @@ venv/
 .pytest_cache/
 fieldproof-starter/.pytest_cache/
 fieldproof-starter/backend/var/
+
+# Signing material — never commit keystores, key material or secret files.
+*.jks
+*.keystore
+*.p12
+*.pepk
+keystore.properties
+signing.properties
+/upload-keystore*
+/release-keystore*
+/fieldproof-upload.*
+app/*.jks
+app/*.keystore
+
+# Release tooling output
+/release-artifacts/
+sbom.json
+license-report.json

@@ -1,11 +1,14 @@
 package com.spacedrift.fieldproof.data.remote
 
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
 
 sealed interface EvidenceUploadResult {
     data object Success : EvidenceUploadResult
 
-    data object Conflict : EvidenceUploadResult
+    data class Conflict(
+        val serverConflict: ServerConflict
+    ) : EvidenceUploadResult
 
     data class Failed(
         val retryable: Boolean,

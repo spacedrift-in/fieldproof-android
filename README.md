@@ -27,8 +27,9 @@ silently loses evidence.
 > **Status:** early, active development. The offline vertical slice (inspection →
 > checklist → evidence capture → durable sync → server-side submit/review/PDF
 > report) is implemented and builds for both debug and release, with JVM +
-> instrumented test suites and a CI emulator lane. Background (periodic) automatic
-> sync and checklist-outcome uploads are not implemented yet. There are no
+> instrumented test suites and a CI emulator lane. Checklist outcomes
+> (`PASS`/`FAIL`/`NOT_APPLICABLE` + per-item notes) now sync to the server.
+> Background (periodic) automatic sync is not implemented yet. There are no
 > performance or compliance claims in this repository.
 
 ## Table of contents
@@ -70,15 +71,15 @@ a documented API contract and a small FastAPI skeleton. See
 | Area | What's implemented |
 | :--- | :--- |
 | **Inspections** | Create inspections offline; list and reopen them after process death (Room as source of truth) |
-| **Checklists** | Default checklist items with required/optional flags; per-item completion tracked locally |
-| **Evidence** | Timestamped photo capture (CameraX) and text notes, stored app-privately and linked to an inspection |
-| **Sync model** | Durable local `SyncOperation` records with a stable idempotency key per evidence upload |
+| **Checklists** | Default checklist items with required/optional flags; per-item outcome (`PASS`/`FAIL`/`NOT_APPLICABLE`) and note captured locally and synced |
+| **Evidence** | Timestamped photo capture (CameraX) and text notes, encrypted at rest (Keystore AES-256-GCM), stored app-privately and linked to an inspection |
+| **Sync model** | Durable local `SyncOperation` records with stable ids/idempotency keys for inspection, evidence and checklist-outcome uploads |
+| **Conflicts** | Server conflicts are surfaced per item; the user keeps their local copy (re-queued under a fresh key) or accepts the server version, with no silent data loss |
 | **Permissions** | Runtime camera permission with an actionable denied state |
 | **UI** | Jetpack Compose, Material 3, loading / empty / error-aware states |
 | **API contract** | Retrofit client matching the documented `/api/v1` endpoints, incl. `Idempotency-Key` |
 
-**Not implemented yet:** background (periodic) automatic sync, checklist-outcome
-upload, conflict-resolution UI, authentication. See
+**Not implemented yet:** background (periodic) automatic sync, authentication. See
 [`fieldproof-starter/docs/known-limitations.md`](fieldproof-starter/docs/known-limitations.md)
 for the full, dated log.
 
@@ -191,6 +192,24 @@ Open the folder in Android Studio to use the Run configuration.
 ./gradlew :app:assembleRelease   # runs R8 minification + lint vital
 ```
 
+Release builds are **unsigned** unless an upload keystore is configured, so this
+is safe for local smoke-testing (it produces `app-release-unsigned.apk`). To build
+a signed bundle locally, point the build at a keystore and require signing:
+
+```bash
+FIELD_PROOF_UPLOAD_KEYSTORE_PATH=/path/to/upload.jks \
+FIELD_PROOF_UPLOAD_KEYSTORE_PASSWORD=... \
+FIELD_PROOF_UPLOAD_KEY_ALIAS=fieldproof-upload \
+FIELD_PROOF_UPLOAD_KEY_PASSWORD=... \
+  ./gradlew :app:bundleRelease -Pfieldproof.requireSigning=true
+```
+
+CI produces signed, versioned AAB/APK artifacts plus an SBOM, license report and
+build provenance. Keystores are never committed (fetched from AWS Secrets Manager
+via GitHub OIDC at build time). See
+[the release guide](fieldproof-starter/docs/release.md) for signing setup, the
+full pipeline, and the Google Play release/rollback procedure.
+
 ## Testing
 
 ```bash
@@ -201,7 +220,8 @@ Open the folder in Android Studio to use the Run configuration.
 ### Device / emulator UI tests
 
 Instrumented Compose tests cover inspection creation, checklist completion,
-camera permission denial, the evidence-capture state, and sync-state display.
+camera permission denial, the camera capture/error states, the home loading state,
+the evidence-capture state, and sync-state display.
 They run against the real framework on a device or emulator (API 34 is pinned
 in CI; any API ≥ 24 works):
 
@@ -217,7 +237,9 @@ CI runs this suite automatically in the dedicated `android-instrumented`
 emulator lane (API 34, x86_64, headless — see `.github/workflows/ci.yml`). The
 same suite can be run on a physical device; a Google Play-protected ROM (e.g.
 MIUI) may require "Install via USB" and can block instrumentation input
-injection.
+injection, and may also deny the test activity from starting until background
+activity starts are allowed (for MIUI this is app-op `10021`:
+`adb shell appops set com.spacedrift.fieldproof 10021 allow`).
 
 To reproduce the full walking demo with the backend (synthetic data only), follow
 [`fieldproof-starter/docs/demo.md`](fieldproof-starter/docs/demo.md); screenshots
@@ -227,8 +249,13 @@ are in [`fieldproof-starter/docs/screenshots/`](fieldproof-starter/docs/screensh
 
 The starter includes a PostgreSQL-backed FastAPI service for inspections,
 checklist items, evidence (multipart), submit/review and PDF report export, with
-idempotency and optimistic concurrency. See
-[`fieldproof-starter/README.md`](fieldproof-starter/README.md).
+idempotency and optimistic concurrency. It also ships a production baseline:
+private S3-compatible object storage (encryption + lifecycle), size/MIME-validated
+streaming uploads with a malware-scan hook, request-scoped tenancy, a
+readiness endpoint, CORS allowlist, rate limiting, and a non-root container. See
+[`fieldproof-starter/README.md`](fieldproof-starter/README.md),
+[`docs/deployment.md`](fieldproof-starter/docs/deployment.md) and
+[`docs/disaster-recovery.md`](fieldproof-starter/docs/disaster-recovery.md).
 
 ```bash
 cd fieldproof-starter
@@ -250,7 +277,7 @@ including idempotent evidence upload and optimistic concurrency — is in
 | :--- | :--- | :--- |
 | 1 · Definition | User flow, data model, API contract, acceptance criteria | ✅ docs in `fieldproof-starter/docs/` |
 | 2 · Vertical slice | One complete offline workflow on synthetic fixtures | ✅ see `docs/demo.md` Steps 1-12 |
-| 3 · Reliability | Failure recovery, access checks, automated tests | 🟡 52 JVM + 25 instrumented tests; CI emulator lane |
+| 3 · Reliability | Failure recovery, access checks, automated tests | 🟡 93 JVM + 42 instrumented tests; CI emulator lane |
 | 4 · Demonstration | Repeatable demo, screenshots, documented limitations | ✅ `docs/demo.md`, `docs/screenshots/`, `docs/known-limitations.md` |
 | 5 · Handoff | Reproducible setup, build instructions, maintenance notes | 🟡 this README + `scripts/verify_clean_setup.sh` |
 
@@ -264,6 +291,8 @@ including idempotent evidence upload and optimistic concurrency — is in
 - [Acceptance criteria](fieldproof-starter/docs/acceptance-criteria.md)
 - [Demo script (reproducible walkthrough)](fieldproof-starter/docs/demo.md)
 - [Screenshot gallery](fieldproof-starter/docs/screenshots/)
+- [Security & data handling](fieldproof-starter/docs/security.md)
+- [Android release & Play delivery guide](fieldproof-starter/docs/release.md)
 - [Known limitations log](fieldproof-starter/docs/known-limitations.md)
 
 ## Contributing
@@ -282,6 +311,12 @@ Please do **not** open public issues for vulnerabilities. See
 [`SECURITY.md`](SECURITY.md) for the reporting process. Secrets, private client
 data and real evidence must never be committed — this repository uses synthetic
 fixtures only.
+
+Captured evidence is encrypted on-device with a Keystore-backed AES-256-GCM key,
+Android backups are disabled, sensitive screens use `FLAG_SECURE`, release
+logging is off, and both the app and backend support deletion and retention.
+See [`fieldproof-starter/docs/security.md`](fieldproof-starter/docs/security.md)
+for the full privacy/encryption/key-loss behavior.
 
 ## License
 

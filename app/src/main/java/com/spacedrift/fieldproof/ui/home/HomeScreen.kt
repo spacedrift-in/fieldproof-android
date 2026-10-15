@@ -37,6 +37,7 @@ import com.spacedrift.fieldproof.data.local.InspectionSummaryEntity
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
 import com.spacedrift.fieldproof.ui.components.EmptyState
 import com.spacedrift.fieldproof.ui.components.InspectionCard
+import com.spacedrift.fieldproof.ui.components.LoadingState
 import com.spacedrift.fieldproof.ui.components.StatusChip
 import com.spacedrift.fieldproof.ui.components.SyncStatusCard
 import com.spacedrift.fieldproof.ui.components.SyncSummary
@@ -122,11 +123,7 @@ fun HomeScreen(
 
             if (!ready) {
                 item {
-                    EmptyState(
-                        icon = Icons.Outlined.FolderOpen,
-                        title = stringResource(R.string.loading_inspections),
-                        body = null
-                    )
+                    LoadingState(label = stringResource(R.string.loading_inspections))
                 }
             } else if (summaries.isEmpty()) {
                 item {

@@ -21,6 +21,13 @@ class HealthResponse(BaseModel):
     stage: str
 
 
+class ReadyResponse(BaseModel):
+    status: str
+    database: str
+    storage: str
+    storage_backend: str
+
+
 # ---------------------------------------------------------------------------
 # Inspections
 # ---------------------------------------------------------------------------
@@ -105,6 +112,43 @@ class UploadEvidenceResponse(BaseModel):
 
     id: uuid.UUID
     status: str
+
+
+# ---------------------------------------------------------------------------
+# Checklist outcomes
+# ---------------------------------------------------------------------------
+
+class ChecklistOutcomeUpdate(BaseModel):
+    """Set a checklist item's outcome (and optional per-item note).
+
+    ``expected_version`` is the checklist item's server version used for
+    optimistic concurrency. Omitting it performs an unconditional update; if the
+    item already matches the requested outcome/note the call is an idempotent
+    no-op so client retries are safe.
+    """
+
+    status: Literal["NOT_STARTED", "PASS", "FAIL", "NOT_APPLICABLE"]
+    note: str | None = Field(default=None, max_length=2000)
+    expected_version: int | None = Field(
+        default=None,
+        description="Checklist item version the client last saw; mismatch returns 409.",
+    )
+
+
+class ChecklistOutcomeResponse(BaseModel):
+    """Result of a checklist outcome update, carrying the new inspection version."""
+
+    inspection_id: uuid.UUID
+    inspection_version: int
+    item: ChecklistItemOut
+
+
+class FieldError(BaseModel):
+    """Actionable, field-addressable validation error for a failed submission."""
+
+    field: str
+    code: str
+    message: str
 
 
 class SubmitRequest(BaseModel):

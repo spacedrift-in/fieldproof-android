@@ -1,5 +1,6 @@
 package com.spacedrift.fieldproof.di
 
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploader
 import com.spacedrift.fieldproof.data.remote.ContentResolverEvidenceFileReader
 import com.spacedrift.fieldproof.data.remote.EvidenceFileReader
 import com.spacedrift.fieldproof.data.remote.EvidenceUploader
@@ -27,6 +28,12 @@ abstract class RepositoryModule {
     abstract fun bindInspectionUploader(
         remoteRepository: RemoteRepository
     ): InspectionUploader
+
+    @Binds
+    @Singleton
+    abstract fun bindChecklistOutcomeUploader(
+        remoteRepository: RemoteRepository
+    ): ChecklistOutcomeUploader
 
     @Binds
     @Singleton

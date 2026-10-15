@@ -44,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -57,12 +58,17 @@ import com.spacedrift.fieldproof.data.remote.RemoteReport
 import com.spacedrift.fieldproof.data.remote.WorkflowResult
 import com.spacedrift.fieldproof.ui.components.ChecklistItemRow
 import com.spacedrift.fieldproof.ui.components.ChecklistProgressRow
+import com.spacedrift.fieldproof.ui.components.ConflictResolutionCard
+import com.spacedrift.fieldproof.ui.components.describeConflict
 import com.spacedrift.fieldproof.ui.components.EmptyState
 import com.spacedrift.fieldproof.ui.components.EvidenceCaptureCard
 import com.spacedrift.fieldproof.ui.components.EvidenceRow
+import com.spacedrift.fieldproof.ui.components.LoadingState
 import com.spacedrift.fieldproof.ui.components.SectionHeader
+import com.spacedrift.fieldproof.ui.components.SecureScreen
 import com.spacedrift.fieldproof.ui.components.StatusChip
 import com.spacedrift.fieldproof.ui.components.StatusTone
+import com.spacedrift.fieldproof.ui.components.SyncBadge
 import com.spacedrift.fieldproof.ui.components.SyncStatusCard
 import com.spacedrift.fieldproof.ui.components.SyncSummary
 import com.spacedrift.fieldproof.ui.components.deriveSyncSummary
@@ -71,6 +77,8 @@ import com.spacedrift.fieldproof.ui.components.syncStatusLabel
 import com.spacedrift.fieldproof.ui.inspection.InspectionViewModel
 import com.spacedrift.fieldproof.ui.report.ReportPdfExporter
 import com.spacedrift.fieldproof.ui.theme.Dimens
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -81,46 +89,83 @@ fun InspectionDetailScreen(
     onBack: () -> Unit,
     onCaptureForItem: (String?, String?) -> Unit
 ) {
-    val inspections by viewModel.inspections.collectAsState()
-    val inspection = inspections.firstOrNull { it.id == inspectionId }
+    // The detail screen renders captured evidence; block screenshots/recording.
+    SecureScreen()
 
     LaunchedEffect(inspectionId) {
         viewModel.openInspection(inspectionId)
     }
 
-    if (inspection == null) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text(stringResource(R.string.inspection_heading)) },
-                    navigationIcon = {
-                        OutlinedIconButton(onClick = onBack) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = stringResource(R.string.action_back)
-                            )
-                        }
-                    }
+    val detailState by remember(inspectionId) {
+        viewModel.observeInspection(inspectionId).asDetailState()
+    }.collectAsState(initial = InspectionDetailState.Loading)
+
+    when (val state = detailState) {
+        InspectionDetailState.Loading -> {
+            InspectionChrome(onBack = onBack) { padding ->
+                LoadingState(
+                    label = stringResource(R.string.loading_inspection),
+                    modifier = Modifier.padding(padding)
                 )
             }
-        ) { padding ->
-            EmptyState(
-                icon = Icons.Outlined.Warning,
-                title = "Inspection not found",
-                body = "It may have been deleted on this device.",
-                modifier = Modifier.padding(padding)
-            )
+            return
         }
-        return
+
+        InspectionDetailState.NotFound -> {
+            InspectionChrome(onBack = onBack) { padding ->
+                EmptyState(
+                    icon = Icons.Outlined.Warning,
+                    title = stringResource(R.string.inspection_not_found_title),
+                    body = stringResource(R.string.inspection_not_found_body),
+                    modifier = Modifier.padding(padding)
+                )
+            }
+            return
+        }
+
+        is InspectionDetailState.Loaded -> DetailContent(
+            inspection = state.inspection,
+            inspectionId = inspectionId,
+            viewModel = viewModel,
+            onBack = onBack,
+            onCaptureForItem = onCaptureForItem
+        )
+    }
+}
+
+internal sealed interface InspectionDetailState {
+    data object Loading : InspectionDetailState
+    data object NotFound : InspectionDetailState
+    data class Loaded(val inspection: InspectionEntity) : InspectionDetailState
+}
+
+internal fun Flow<InspectionEntity?>.asDetailState(): Flow<InspectionDetailState> =
+    map { entity ->
+        if (entity == null) InspectionDetailState.NotFound
+        else InspectionDetailState.Loaded(entity)
     }
 
-    DetailContent(
-        inspection = inspection,
-        inspectionId = inspectionId,
-        viewModel = viewModel,
-        onBack = onBack,
-        onCaptureForItem = onCaptureForItem
-    )
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InspectionChrome(
+    onBack: () -> Unit,
+    content: @Composable (androidx.compose.foundation.layout.PaddingValues) -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.inspection_heading)) },
+                navigationIcon = {
+                    OutlinedIconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.action_back)
+                        )
+                    }
+                }
+            )
+        }
+    ) { padding -> content(padding) }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -141,6 +186,7 @@ private fun DetailContent(
         .collectAsState(initial = emptyList())
 
     val syncOperations by viewModel.syncOperations.collectAsState()
+    val conflicts by viewModel.conflicts.collectAsState()
     val isOnline by viewModel.isOnline.collectAsState()
 
     val workflow by viewModel.workflow.collectAsState()
@@ -153,15 +199,34 @@ private fun DetailContent(
         evidence.any { ev ->
             ev.checklistItemId == item.id &&
                 ev.type == "PHOTO" &&
-                ev.syncStatus == "SYNCED"
+                ev.isResolvedForSubmission()
         }
     }
     val inspectionOperation = syncOperations.firstOrNull {
         it.entityType == "INSPECTION" && it.entityId == inspectionId
     }
-    val inspectionSynced = inspectionOperation?.status == "SYNCED"
-    val evidenceSynced = evidence.all { ev -> ev.syncStatus == "SYNCED" }
-    val canSubmit = requiredEvidenceComplete && inspectionSynced && evidenceSynced
+    val inspectionSynced = inspectionOperation?.status == "SYNCED" ||
+        inspectionOperation?.status == "RESOLVED"
+    val evidenceSynced = evidence.all { ev -> ev.isResolvedForSubmission() }
+    val requiredOutcomesComplete = requiredItems.all {
+        it.outcome != ChecklistItemEntity.OUTCOME_NOT_STARTED
+    }
+    val serverRejected = workflow.missingEvidenceItemIds.isNotEmpty()
+    val canSubmit = requiredEvidenceComplete &&
+        requiredOutcomesComplete &&
+        inspectionSynced &&
+        evidenceSynced &&
+        !serverRejected
+
+    val conflictPresentations = conflicts
+        .filter { operation ->
+            (operation.entityType == "INSPECTION" && operation.entityId == inspectionId) ||
+                (operation.entityType == "EVIDENCE" &&
+                    evidence.any { it.id == operation.entityId }) ||
+                (operation.entityType == "CHECKLIST" &&
+                    checklist.any { it.id == operation.entityId })
+        }
+        .map { operation -> describeConflict(operation, evidence, inspection, checklist) }
 
     val syncSummary: SyncSummary = deriveSyncSummary(syncOperations, isOnline)
 
@@ -219,6 +284,10 @@ private fun DetailContent(
                     ) {
                         StatusChip(label = inspection.status)
 
+                        inspectionOperation?.let { operation ->
+                            SyncBadge(status = operation.status)
+                        }
+
                         workflow.serverStatus?.let { serverStatus ->
                             StatusChip(label = serverStatus.take(20))
                         }
@@ -231,6 +300,24 @@ private fun DetailContent(
                     summary = syncSummary,
                     onRetrySync = { viewModel.retrySync() }
                 )
+            }
+
+            if (conflictPresentations.isNotEmpty()) {
+                item {
+                    ConflictResolutionCard(
+                        conflicts = conflictPresentations,
+                        onKeepLocal = { operationId ->
+                            conflicts
+                                .firstOrNull { it.id == operationId }
+                                ?.let { viewModel.keepLocal(it) }
+                        },
+                        onUseServer = { operationId ->
+                            conflicts
+                                .firstOrNull { it.id == operationId }
+                                ?.let { viewModel.useServer(it) }
+                        }
+                    )
+                }
             }
 
             workflow.message?.let { message ->
@@ -284,7 +371,9 @@ private fun DetailContent(
                 SectionHeader(
                     title = stringResource(R.string.checklist_heading),
                     trailing = {
-                        if (requiredItems.isNotEmpty() && !requiredEvidenceComplete) {
+                        if (workflow.missingEvidenceItemIds.isNotEmpty() ||
+                            (requiredItems.isNotEmpty() && !requiredEvidenceComplete)
+                        ) {
                             StatusChip(
                                 label = "Action needed",
                                 tone = statusTone("FAILED")
@@ -303,14 +392,18 @@ private fun DetailContent(
                     hasSyncedPhoto = evidence.any {
                         it.checklistItemId == item.id && it.type == "PHOTO" && it.syncStatus == "SYNCED"
                     },
-                    onCheckedChange = { checked ->
-                        viewModel.completeChecklistItem(item.id, checked)
+                    onOutcomeChange = { outcome ->
+                        viewModel.setChecklistOutcome(item.id, outcome, item.note)
+                    },
+                    onNoteChange = { note ->
+                        viewModel.setChecklistOutcome(item.id, item.outcome, note)
                     },
                     onAddEvidence = if (item.required) {
                         { onCaptureForItem(item.id, item.title) }
                     } else {
                         null
-                    }
+                    },
+                    serverMissingEvidence = item.id in workflow.missingEvidenceItemIds
                 )
             }
 
@@ -378,7 +471,16 @@ private fun DetailContent(
                 ) { item ->
                     EvidenceRow(
                         evidence = item,
-                        checklistTitle = checklist.firstOrNull { it.id == item.checklistItemId }?.title
+                        checklistTitle = checklist.firstOrNull { it.id == item.checklistItemId }?.title,
+                        onRetry = syncOperations
+                            .firstOrNull {
+                                it.entityType == "EVIDENCE" &&
+                                    it.entityId == item.id &&
+                                    it.status == "FAILED"
+                            }
+                            ?.let { operation ->
+                                { viewModel.retryOperation(operation.id) }
+                            }
                     )
                 }
             }
@@ -425,7 +527,9 @@ private fun DetailContent(
                                 canSubmit = canSubmit,
                                 inspectionSynced = inspectionSynced,
                                 requiredEvidenceComplete = requiredEvidenceComplete,
-                                evidenceSynced = evidenceSynced
+                                requiredOutcomesComplete = requiredOutcomesComplete,
+                                evidenceSynced = evidenceSynced,
+                                serverRejected = serverRejected
                             ),
                             inspectionSynced = inspectionSynced,
                             requiredEvidenceComplete = requiredEvidenceComplete,
@@ -445,6 +549,9 @@ private fun DetailContent(
     }
 }
 
+private fun EvidenceEntity.isResolvedForSubmission(): Boolean =
+    syncStatus == "SYNCED" || syncStatus == "SUPERSEDED"
+
 private fun requiredEvidenceCount(
     requiredItems: List<ChecklistItemEntity>,
     evidence: List<EvidenceEntity>
@@ -453,7 +560,7 @@ private fun requiredEvidenceCount(
         evidence.any { ev ->
             ev.checklistItemId == item.id &&
                 ev.type == "PHOTO" &&
-                ev.syncStatus == "SYNCED"
+                ev.isResolvedForSubmission()
         }
     }
 }
@@ -486,14 +593,21 @@ private fun submitHint(
     canSubmit: Boolean,
     inspectionSynced: Boolean,
     requiredEvidenceComplete: Boolean,
-    evidenceSynced: Boolean
+    requiredOutcomesComplete: Boolean,
+    evidenceSynced: Boolean,
+    serverRejected: Boolean
 ): String? {
     if (canSubmit) return null
     return when {
+        serverRejected ->
+            "The server rejected this submission. Attach the missing required evidence " +
+                "to the highlighted items, then submit again."
         !inspectionSynced ->
             "The inspection must sync first. Wait for sync or tap Retry sync."
         !requiredEvidenceComplete ->
             "Attach a photo to every required checklist item before submitting."
+        !requiredOutcomesComplete ->
+            "Record a Pass, Fail or N/A outcome for every required item before submitting."
         !evidenceSynced ->
             "Wait for all evidence to sync, then try again."
         else -> "Not ready to submit yet."
@@ -690,6 +804,7 @@ internal fun ReportCardSection(
     loadPdf: suspend () -> WorkflowResult<ByteArray>
 ) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
 
     var pdfBusy by remember { mutableStateOf(false) }
@@ -706,9 +821,9 @@ internal fun ReportCardSection(
                 context.contentResolver.openOutputStream(uri)?.use { output ->
                     output.write(bytes)
                 }
-                pdfMessage = context.getString(R.string.report_pdf_exported)
+                pdfMessage = resources.getString(R.string.report_pdf_exported)
             } catch (exception: Exception) {
-                pdfMessage = context.getString(
+                pdfMessage = resources.getString(
                     R.string.report_pdf_failed,
                     exception.message ?: "unknown error"
                 )
@@ -771,7 +886,7 @@ internal fun ReportCardSection(
                                             result.value
                                         )
                                         if (!ReportPdfExporter.open(context, file)) {
-                                            pdfMessage = context.getString(
+                                            pdfMessage = resources.getString(
                                                 R.string.report_pdf_no_viewer
                                             )
                                         }

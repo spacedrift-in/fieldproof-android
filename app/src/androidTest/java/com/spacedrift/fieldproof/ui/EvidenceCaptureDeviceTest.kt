@@ -41,7 +41,7 @@ class EvidenceCaptureDeviceTest {
     fun captureHeader_indicatesRequiredPhotoForItem() {
         composeRule.setContent {
             FieldProofTheme {
-                CaptureHeader(title = "Fire extinguisher", requiresPhoto = true)
+                CaptureHeader(title = "Fire extinguisher", requiresPhoto = true, onClose = {})
             }
         }
 
@@ -54,7 +54,7 @@ class EvidenceCaptureDeviceTest {
     fun captureHeader_generalOptionalEvidence() {
         composeRule.setContent {
             FieldProofTheme {
-                CaptureHeader(title = null, requiresPhoto = false)
+                CaptureHeader(title = null, requiresPhoto = false, onClose = {})
             }
         }
 
@@ -71,7 +71,8 @@ class EvidenceCaptureDeviceTest {
                 CapturedPreview(
                     uri = Uri.parse("file:///nonexistent/fieldproof/photo.jpg"),
                     onRetake = { retook = true },
-                    onUse = { used = true }
+                    onUse = { used = true },
+                    onClose = {}
                 )
             }
         }

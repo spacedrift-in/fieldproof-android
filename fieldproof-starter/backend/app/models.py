@@ -32,6 +32,9 @@ class Inspection(Base):
     __tablename__ = "inspections"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(63), nullable=False, default="demo", server_default="demo", index=True
+    )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     location: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="DRAFT")
@@ -88,6 +91,9 @@ class Evidence(Base):
     __tablename__ = "evidence"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(63), nullable=False, default="demo", server_default="demo", index=True
+    )
     inspection_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("inspections.id", ondelete="CASCADE"), index=True
     )

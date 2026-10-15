@@ -58,12 +58,19 @@ uvicorn app.main:app --app-dir backend --reload
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness check (no database dependency) |
+| GET | `/readyz` | Readiness check (database + object storage) |
 | POST | `/api/v1/inspections` | Create/sync an inspection. Requires `Idempotency-Key`. |
 | GET | `/api/v1/inspections/{id}` | Fetch inspection, checklist, evidence and reviews |
 | POST | `/api/v1/inspections/{id}/evidence` | Upload a photo file + metadata (multipart, idempotent) |
+| GET | `/api/v1/inspections/{id}/evidence/{evidence_id}` | Download stored evidence with safe headers |
+| PUT | `/api/v1/inspections/{id}/checklist/{item_id}` | Set a checklist item outcome + note |
 | POST | `/api/v1/inspections/{id}/submit` | Submit; blocked unless required evidence exists |
 | POST | `/api/v1/inspections/{id}/review` | Record `approved` / `changes_requested` |
 | GET | `/api/v1/inspections/{id}/report` | Report for an approved inspection |
+| GET | `/api/v1/inspections/{id}/report.pdf` | Download the report as a PDF |
+
+All endpoints are tenant-scoped via the `X-Tenant-Id` header (default `demo`);
+cross-tenant reads return `404`.
 
 ### Behaviour guarantees
 
@@ -76,9 +83,24 @@ uvicorn app.main:app --app-dir backend --reload
   `409` instead of overwriting.
 - **State machine:** `DRAFT → SUBMITTED → APPROVED | CHANGES_REQUESTED`
   (a `CHANGES_REQUESTED` inspection can receive new evidence and be submitted again).
-- **Evidence storage:** files are written under `backend/var/evidence/` behind the
-  `EvidenceStorage` abstraction (`backend/app/storage.py`), ready to be swapped for
-  object storage.
+- **Evidence storage:** files are written behind the `EvidenceStorage` abstraction
+  (`backend/app/storage.py`). Development uses the local filesystem
+  (`backend/var/evidence/`); production uses `S3EvidenceStorage` (private,
+  SSE-encrypted object storage) via `EVIDENCE_STORAGE_BACKEND=s3`. Lifecycle
+  expiration is **tag-scoped** to objects the retention sweep marks eligible
+  (APPROVED only; legal holds excluded), and app-managed lifecycle is opt-in
+  (`EVIDENCE_S3_MANAGE_LIFECYCLE`) so it never clobbers unrelated bucket rules.
+- **Upload hardening:** size-bounded streaming (`413`), content-based MIME
+  validation against `ALLOWED_IMAGE_TYPES` (`415`), and a malware-scanning
+  integration point (`MALWARE_SCANNER`, `422`/`503`). Downloads are served with
+  `attachment` + `nosniff`.
+- **Edge security:** optional CORS allowlist, per-tenant rate limiting, and a
+  non-root production container — see [`docs/deployment.md`](docs/deployment.md)
+  and [`docs/disaster-recovery.md`](docs/disaster-recovery.md).
+- **Deletion & retention:** `DELETE /api/v1/inspections/{id}` and
+  `DELETE /api/v1/tenant` (with `X-Confirm-Delete`) remove rows **and** stored
+  objects; `POST /api/v1/maintenance/retention` purges approved evidence older
+  than `EVIDENCE_RETENTION_DAYS`. See [`docs/security.md`](docs/security.md).
 
 ## Tests
 
@@ -98,20 +120,68 @@ If no `DATABASE_URL`/`TEST_DATABASE_URL` is set, the database-backed tests are
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | `postgresql+psycopg://fieldproof:fieldproof@localhost:5432/fieldproof` | SQLAlchemy database URL |
-| `EVIDENCE_STORAGE_DIR` | `backend/var/evidence` | Local directory for uploaded evidence |
+| `APP_ENV` | `development` | Reported by `/health`; set `production` in prod |
+| `EVIDENCE_STORAGE_BACKEND` | `local` | `local` (dev) or `s3` (production) |
+| `EVIDENCE_STORAGE_DIR` | `backend/var/evidence` | Local directory (dev backend only) |
+| `EVIDENCE_S3_BUCKET` / `_REGION` / `_ENDPOINT_URL` / `_PREFIX` | — | Object storage target |
+| `EVIDENCE_S3_SSE` / `_KMS_KEY_ID` | `AES256` | Server-side encryption mode/key |
+| `EVIDENCE_S3_LIFECYCLE_*_DAYS` | `0` | Prefix-scoped transitions; expiry is tag-scoped to sweep-eligible objects (`0` = off) |
+| `EVIDENCE_S3_MANAGE_LIFECYCLE` | `false` | Let the app write lifecycle rules (merges its own; default off = provision via IaC) |
 | `MAX_EVIDENCE_BYTES` | `10485760` | Maximum accepted upload size |
+| `ALLOWED_IMAGE_TYPES` | `image/jpeg,image/png,image/webp,image/heic,image/gif` | MIME allowlist |
+| `MALWARE_SCANNER` | `noop` | `noop` (dev) or `clamav` |
+| `CLAMAV_HOST` / `CLAMAV_PORT` | `127.0.0.1` / `3310` | ClamAV daemon |
+| `MALWARE_SCAN_FAIL_CLOSED` | `true` | Reject uploads (`503`) when the scanner is down |
+| `DEFAULT_TENANT` | `demo` | Tenant used when `X-Tenant-Id` is absent |
+| `EVIDENCE_RETENTION_DAYS` | `0` | Purge approved evidence older than this (`0` = off) |
+| `RETENTION_ADMIN_TOKEN` | *(unset)* | Required by the retention sweep endpoint (`503` when unset) |
+| `CORS_ALLOWED_ORIGINS` | *(empty)* | Comma-separated exact origins |
+| `CORS_ALLOW_CREDENTIALS` | `false` | Allow credentialed CORS |
+| `RATE_LIMIT_ENABLED` | `false` | Enable the per-process rate limiter |
+| `RATE_LIMIT_REQUESTS` / `_WINDOW_SECONDS` | `120` / `60` | Limiter threshold/window |
+| `DOCS_ENABLED` | `true` | Expose `/docs`, `/redoc`, `/openapi.json` |
+
+See [`.env.example`](.env.example) for the full production template and
+[`docs/deployment.md`](docs/deployment.md) for guidance.
+
+## Production baseline
+
+A production-oriented stack (Postgres + MinIO + ClamAV + the API container,
+non-root/read-only with healthchecks) is provided as
+[`docker-compose.prod.yml`](docker-compose.prod.yml). Use it with the
+`.env.example` template:
+
+```bash
+cd fieldproof-starter
+cp .env.example .env    # fill in real values; never commit
+docker compose -f docker-compose.prod.yml up -d --build
+curl -fsS http://localhost:8000/readyz
+```
+
+See [`docs/deployment.md`](docs/deployment.md) (staging/production, secrets,
+storage, TLS, scaling) and [`docs/disaster-recovery.md`](docs/disaster-recovery.md)
+(backups, RPO/RTO, restore runbooks).
 
 ## Known gaps (honest status)
 
-- No authentication or authorization yet (by design for this milestone).
-- Checklist item outcomes are seeded as `NOT_STARTED`; there is no endpoint yet to
-  set `PASS`/`FAIL`/`NOT_APPLICABLE` or per-item notes on the server. The Android
-  client tracks completion locally. Consequence: report `passed/failed` counts are
-  `0` until that endpoint exists.
+- **Tenancy is header-based, not authenticated** (`X-Tenant-Id`), so it is not
+  an authorization boundary (`KL-015`). Authentication is still not implemented
+  (by design for this milestone, `KL-001`).
+- Rate limiting is per-process only — use ingress limiting or a shared store for
+  multiple replicas (`KL-016`).
+- Uploads are validated from bounded in-memory bytes, not streamed straight into
+  object storage (`KL-017`).
+- Checklist item outcomes sync via `PUT /api/v1/inspections/{id}/checklist/{item_id}`
+  (`status` `PASS`/`FAIL`/`NOT_APPLICABLE` + optional per-item `note`, with
+  `expected_version`). Items are still seeded `NOT_STARTED` until an outcome is
+  recorded, and submission now requires required evidence **and** a terminal
+  outcome per required item. Report `passed/failed/not_applicable` counts reflect
+  the synced outcomes. (`KL-002`, mitigated 2026-10-13.)
 - Schema is created with `create_all`; no migrations (e.g. Alembic) yet.
-- The app syncs on launch or manual *Retry sync*; there is no background/periodic
-  worker (evidence added after launch waits for the next trigger). See
-  `docs/known-limitations.md` `KL-004`.
+- Sync is trigger-driven: queuing an inspection/evidence enqueues a unique
+  one-time worker (connected-network constrained), and launch also enqueues. There
+  is no background/periodic worker, so evidence added while offline waits for
+  connectivity or a manual *Retry sync*. See `docs/known-limitations.md` `KL-004`.
 - PDF reports reference evidence (kind, id, note snippet) and reviewer signoff but
   do not embed raw photo bitmaps (`KL-005`).
 - The full, dated list lives in [`docs/known-limitations.md`](docs/known-limitations.md).

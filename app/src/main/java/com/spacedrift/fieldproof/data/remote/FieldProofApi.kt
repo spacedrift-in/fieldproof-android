@@ -7,6 +7,7 @@ import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.Multipart
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Streaming
@@ -34,6 +35,13 @@ interface FieldProofApi {
         @Part parts: List<MultipartBody.Part>,
         @Header("Idempotency-Key") idempotencyKey: String
     ): UploadEvidenceResponse
+
+    @PUT("api/v1/inspections/{inspectionId}/checklist/{checklistItemId}")
+    suspend fun updateChecklistOutcome(
+        @Path("inspectionId") inspectionId: String,
+        @Path("checklistItemId") checklistItemId: String,
+        @Body request: ChecklistOutcomeRequest
+    ): RemoteChecklistOutcomeResponse
 
     @POST("api/v1/inspections/{inspectionId}/submit")
     suspend fun submitInspection(

@@ -1,5 +1,7 @@
 package com.spacedrift.fieldproof.data.remote
 
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
+
 // ---------------------------------------------------------------------------
 // Server DTOs (Gson maps by exact field name; the API uses snake_case).
 // ---------------------------------------------------------------------------
@@ -47,6 +49,18 @@ data class RemoteInspection(
     val checklist_items: List<RemoteChecklistItem> = emptyList(),
     val evidence: List<RemoteEvidence> = emptyList(),
     val reviews: List<RemoteReview> = emptyList()
+)
+
+data class ChecklistOutcomeRequest(
+    val status: String,
+    val note: String? = null,
+    val expected_version: Int? = null
+)
+
+data class RemoteChecklistOutcomeResponse(
+    val inspection_id: String,
+    val inspection_version: Int,
+    val item: RemoteChecklistItem
 )
 
 data class SubmitInspectionRequest(
@@ -111,7 +125,11 @@ data class RemoteReport(
 sealed interface WorkflowResult<out T> {
     data class Success<T>(val value: T) : WorkflowResult<T>
 
-    data class Conflict(val message: String) : WorkflowResult<Nothing>
+    data class Conflict(
+        val serverConflict: ServerConflict
+    ) : WorkflowResult<Nothing> {
+        val message: String get() = serverConflict.message
+    }
 
     data class Failed(
         val message: String,

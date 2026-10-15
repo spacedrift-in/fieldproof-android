@@ -7,15 +7,32 @@ import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionDao
 import com.spacedrift.fieldproof.data.local.InspectionEntity
 import com.spacedrift.fieldproof.data.local.InspectionSummaryEntity
+import com.spacedrift.fieldproof.security.EvidenceImportResult
+import com.spacedrift.fieldproof.security.EvidenceVault
+import com.spacedrift.fieldproof.security.PassthroughEvidenceVault
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 import javax.inject.Inject
+
+/** Result of attempting to record new evidence. */
+sealed interface AddEvidenceResult {
+
+    /** The evidence was secured (when applicable), persisted and queued. */
+    data object Saved : AddEvidenceResult
+
+    /**
+     * The capture could not be encrypted, so it was deliberately not persisted
+     * or queued. The user should be shown [reason] and can retry the capture.
+     */
+    data class EncryptionFailed(val reason: String) : AddEvidenceResult
+}
 
 class InspectionRepository @Inject constructor(
     private val inspectionDao: InspectionDao,
     private val checklistItemDao: ChecklistItemDao,
     private val evidenceDao: EvidenceDao,
-    private val syncRepository: SyncRepository
+    private val syncRepository: SyncRepository,
+    private val evidenceVault: EvidenceVault = PassthroughEvidenceVault
 ) {
 
     fun observeInspections(): Flow<List<InspectionEntity>> {
@@ -30,6 +47,17 @@ class InspectionRepository @Inject constructor(
         inspectionId: String
     ): InspectionEntity? {
         return inspectionDao.getInspection(inspectionId)
+    }
+
+    /**
+     * Observes a single inspection so the detail screen can distinguish
+     * *still loading* from *genuinely missing* instead of flashing a
+     * not-found state before the first database emission.
+     */
+    fun observeInspection(
+        inspectionId: String
+    ): Flow<InspectionEntity?> {
+        return inspectionDao.observeInspection(inspectionId)
     }
 
     suspend fun createInspection(
@@ -81,21 +109,58 @@ class InspectionRepository @Inject constructor(
         )
     }
 
+    /**
+     * Record a checklist outcome (PASS/FAIL/NOT_APPLICABLE) and optional note
+     * locally, then queue a durable sync operation so it reaches the server and
+     * the report totals/PDF reflect it. Linking `completed` keeps the existing
+     * progress aggregates working.
+     */
+    suspend fun setChecklistOutcome(
+        itemId: String,
+        outcome: String,
+        note: String?
+    ) {
+        val revision = checklistItemDao.applyOutcome(
+            itemId = itemId,
+            outcome = outcome,
+            note = note,
+            completed = outcome != ChecklistItemEntity.OUTCOME_NOT_STARTED,
+            syncState = ChecklistItemEntity.SYNC_STATE_QUEUED
+        )
+        syncRepository.queueChecklistOutcome(itemId, revision)
+    }
+
     suspend fun addEvidence(
         inspectionId: String,
         checklistItemId: String?,
         type: String,
         localUri: String?,
         note: String?
-    ) {
+    ): AddEvidenceResult {
         val evidenceId = UUID.randomUUID().toString()
+
+        // Encrypt photo evidence at rest before it is persisted. The camera
+        // writes a short-lived plaintext file; the vault seals it with the
+        // device-bound key and deletes the plaintext copy. If sealing fails we
+        // must NOT fall back to the plaintext URI — that would persist (and
+        // later upload) unencrypted evidence — so the save is aborted.
+        val storedUri = if (type.equals("PHOTO", ignoreCase = true)) {
+            when (val imported = evidenceVault.import(localUri)) {
+                is EvidenceImportResult.Failed ->
+                    return AddEvidenceResult.EncryptionFailed(imported.reason)
+
+                else -> imported.storedUri
+            }
+        } else {
+            localUri
+        }
 
         val evidence = EvidenceEntity(
             id = evidenceId,
             inspectionId = inspectionId,
             checklistItemId = checklistItemId,
             type = type,
-            localUri = localUri,
+            localUri = storedUri,
             note = note,
             capturedAt = System.currentTimeMillis(),
             syncStatus = "QUEUED"
@@ -106,14 +171,76 @@ class InspectionRepository @Inject constructor(
 
         // 2. Create a durable sync operation.
         syncRepository.queueEvidence(evidenceId)
+
+        return AddEvidenceResult.Saved
     }
 
+    /**
+     * Deletes an inspection together with everything that references it: the
+     * sealed evidence files on disk, the queued sync operations, and the Room
+     * rows. Order matters — the files and sync ops are removed before the rows
+     * so an interrupted delete cannot orphan sensitive bytes.
+     */
     suspend fun deleteInspection(
         inspectionId: String
     ) {
+        val evidence = evidenceDao.getForInspection(inspectionId)
+        val checklist = checklistItemDao.getForInspection(inspectionId)
+
+        evidence.forEach { record ->
+            evidenceVault.delete(record.localUri)
+        }
+
+        syncRepository.deleteForEntities(
+            buildList {
+                add(inspectionId)
+                evidence.forEach { add(it.id) }
+                checklist.forEach { add(it.id) }
+            }
+        )
+
         checklistItemDao.deleteForInspection(inspectionId)
         evidenceDao.deleteForInspection(inspectionId)
         inspectionDao.deleteInspection(inspectionId)
+    }
+
+    /**
+     * Retention sweep: removes the on-device copy of evidence that has already
+     * been uploaded (`SYNCED`) and is older than [retentionDays]. The metadata
+     * row is kept but its `localUri` is cleared, so the authoritative copy lives
+     * on the server while the sensitive local bytes are gone. Returns the number
+     * of files purged.
+     */
+    suspend fun purgeExpiredEvidence(
+        retentionDays: Int = DEFAULT_RETENTION_DAYS,
+        now: Long = System.currentTimeMillis()
+    ): Int {
+        if (retentionDays <= 0) return 0
+
+        val cutoff = now - retentionDays * DAY_MILLIS
+        val expired = evidenceDao.getSyncedCapturedBefore(cutoff)
+
+        var purged = 0
+        expired.forEach { record ->
+            if (evidenceVault.delete(record.localUri)) {
+                purged++
+            }
+            evidenceDao.clearLocalUri(record.id)
+        }
+        return purged
+    }
+
+    /**
+     * Full local wipe: deletes every sealed evidence file and all Room rows
+     * (inspections, checklist items, evidence and sync operations). Backs the
+     * user-facing "delete all data" action.
+     */
+    suspend fun deleteAllLocalData() {
+        evidenceVault.deleteAll()
+        evidenceDao.deleteAll()
+        checklistItemDao.deleteAll()
+        inspectionDao.deleteAll()
+        syncRepository.deleteAll()
     }
 
     private suspend fun createDefaultChecklist(
@@ -145,6 +272,11 @@ class InspectionRepository @Inject constructor(
     // deterministically from (inspectionId, template_item_id) so offline-created
     // inspections reference the same items the server creates on sync.
     private companion object {
+        // Retain local evidence copies for 30 days after a successful upload.
+        // The server remains the authoritative copy past this window.
+        const val DEFAULT_RETENTION_DAYS = 30
+        const val DAY_MILLIS = 24L * 60L * 60L * 1000L
+
         val DEMO_TEMPLATE_ITEMS = listOf(
             TemplateItem(
                 templateId = "41adf50d-2c24-4e13-9b7e-2dfae32bfe01",

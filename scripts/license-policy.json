@@ -1,0 +1,38 @@
+{
+  "allowed": [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "0BSD",
+    "Zlib",
+    "CC0-1.0",
+    "Unlicense",
+    "EPL-1.0",
+    "EPL-2.0",
+    "MPL-2.0"
+  ],
+  "review": [
+    "LGPL-2.1",
+    "LGPL-3.0"
+  ],
+  "denied": [
+    "GPL-2.0",
+    "GPL-2.0-only",
+    "GPL-2.0-or-later",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "AGPL-3.0",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "SSPL-1.0"
+  ],
+  "allowUnknown": false,
+  "overrides": {
+    "_comment": "Modules whose published POM omits license metadata. Each entry is a documented, human-verified SPDX id keyed by 'group:name'.",
+    "com.google.guava:listenablefuture": "Apache-2.0",
+    "com.google.auto.value:auto-value-annotations": "Apache-2.0"
+  }
+}

@@ -78,8 +78,16 @@ object EvidenceRequestFactory {
                 URI.create(uri).path
                     ?.substringAfterLast('/')
                     ?.takeIf { it.isNotBlank() }
+                    // Evidence is stored encrypted as `<uuid>.fpenc`; never
+                    // leak that extension to the server. Only keep a name that
+                    // already looks like an image.
+                    ?.takeIf { name ->
+                        name.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
+                    }
                     ?.let { return it }
             }
         return "evidence_${evidence.id}.jpg"
     }
+
+    private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "heic", "heif")
 }

@@ -39,7 +39,15 @@ to be acknowledged.
 
 ## Handling secrets
 
-- Never commit secrets, API keys or tokens. `local.properties` and `.env` files
-  are git-ignored.
-- If you believe a secret has been committed, report it via the email above so
-  it can be rotated and purged from history.
+- Never commit secrets, API keys or tokens. `local.properties`, `.env` files and
+  the Android upload keystore (`*.jks`/`*.keystore`) are git-ignored, and CI runs
+  `scripts/check_repo_hygiene.sh` to fail the build if any signing material or
+  private key is ever tracked.
+- Release signing keys live in **AWS Secrets Manager** (optionally KMS-encrypted)
+  and are fetched at build time via GitHub OIDC — they are never stored in the
+  repository or as long-lived CI secrets. See
+  [the release guide](fieldproof-starter/docs/release.md).
+- If you believe a secret or the upload key has been committed or leaked, report
+  it via the email above so it can be rotated and purged from history. A leaked
+  upload key can be reset in the Play Console without changing the app signing
+  key.
