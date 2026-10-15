@@ -28,7 +28,12 @@ data class ChecklistItemEntity(
     val syncedVersion: Int? = null,
 
     // Local sync lifecycle for this item's outcome: LOCAL/QUEUED/UPLOADING/SYNCED/FAILED/CONFLICT.
-    val syncState: String = SYNC_STATE_LOCAL
+    val syncState: String = SYNC_STATE_LOCAL,
+
+    // Monotonic counter bumped on every local outcome edit. A successful upload
+    // may only acknowledge (mark SYNCED) the exact revision it uploaded, so a
+    // slower in-flight upload can never clobber a newer local edit.
+    val localRevision: Long = 0L
 ) {
     companion object {
         const val OUTCOME_NOT_STARTED = "NOT_STARTED"

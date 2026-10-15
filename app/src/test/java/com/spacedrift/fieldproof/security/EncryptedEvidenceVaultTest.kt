@@ -43,11 +43,12 @@ class EncryptedEvidenceVaultTest {
         newVault()
         val plaintext = "evidence bytes".toByteArray()
 
-        val uri = vault.import(
+        val result = vault.import(
             writeRawFile("FIELDPROOF_1.jpg", plaintext).let(Uri::fromFile).toString()
         )
 
-        assertTrue(uri != null)
+        assertTrue(result is EvidenceImportResult.Sealed)
+        val uri = result.storedUri!!
         val stored = File(Uri.parse(uri).path!!)
         assertTrue(stored.exists())
         assertTrue(stored.name.endsWith(".fpenc"))
@@ -76,7 +77,7 @@ class EncryptedEvidenceVaultTest {
 
         val result = vault.import(Uri.fromFile(raw).toString())
 
-        assertNull(result)
+        assertTrue(result is EvidenceImportResult.AlreadySealed)
     }
 
     @Test
@@ -101,7 +102,7 @@ class EncryptedEvidenceVaultTest {
         newVault()
         val uri = vault.import(
             writeRawFile("FIELDPROOF_3.jpg", "bytes".toByteArray()).let(Uri::fromFile).toString()
-        )!!
+        )!!.storedUri!!
 
         assertTrue(vault.delete(uri))
         assertFalse(File(Uri.parse(uri).path!!).exists())
@@ -117,7 +118,21 @@ class EncryptedEvidenceVaultTest {
                     .let(Uri::fromFile)
                     .toString()
             )
-        }
+    @Test
+    fun `import reports failure and removes the plaintext when sealing fails`() = runBlocking {
+        directory = tempFolder.newFolder("evidence-fail")
+        val failingVault = EncryptedEvidenceVault(
+            directory = directory,
+            cipher = EvidenceCipher(EvidenceKeyProvider { throw IllegalStateException("keystore unavailable") })
+        )
+        val raw = writeRawFile("FIELDPROOF_fail.jpg", "secret".toByteArray())
+
+        val result = failingVault.import(Uri.fromFile(raw).toString())
+
+        assertTrue(result is EvidenceImportResult.Failed)
+        assertFalse("plaintext capture must not be left behind", raw.exists())
+    }
+}
 
         assertEquals(3, vault.deleteAll())
         assertEquals(0, directory.listFiles()?.size ?: 0)
@@ -126,8 +141,8 @@ class EncryptedEvidenceVaultTest {
     @Test
     fun `distinct captures produce distinct stored names`() = runBlocking {
         newVault()
-        val a = vault.import(writeRawFile("a.jpg", byteArrayOf(1)).let(Uri::fromFile).toString())
-        val b = vault.import(writeRawFile("b.jpg", byteArrayOf(2)).let(Uri::fromFile).toString())
+        val a = vault.import(writeRawFile("a.jpg", byteArrayOf(1)).let(Uri::fromFile).toString())!!.storedUri
+        val b = vault.import(writeRawFile("b.jpg", byteArrayOf(2)).let(Uri::fromFile).toString())!!.storedUri
 
         assertNotEquals(a, b)
     }

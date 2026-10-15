@@ -157,6 +157,42 @@ class FakeSyncOperationDao : SyncOperationDao {
         update()
     }
 
+    fun markOperationUploadingIfRevision(
+        operationId: String,
+        revision: Long,
+        attempts: Int,
+        updatedAt: Long
+    ): Int {
+        val current = store[operationId] ?: return 0
+        if (current.revision != revision) return 0
+        store[operationId] = current.copy(
+            status = "UPLOADING",
+            attempts = attempts,
+            lastError = null,
+            updatedAt = updatedAt
+        )
+        update()
+        return 1
+    }
+
+    fun markOperationSyncedIfRevision(
+        operationId: String,
+        revision: Long,
+        attempts: Int,
+        updatedAt: Long
+    ): Int {
+        val current = store[operationId] ?: return 0
+        if (current.revision != revision) return 0
+        store[operationId] = current.copy(
+            status = "SYNCED",
+            attempts = attempts,
+            lastError = null,
+            updatedAt = updatedAt
+        )
+        update()
+        return 1
+    }
+
     fun get(id: String): SyncOperationEntity? = store[id]
 
     fun findByEntityId(entityId: String): SyncOperationEntity? {
@@ -276,6 +312,11 @@ class FakeChecklistItemDao : ChecklistItemDao {
 
     private val store = linkedMapOf<String, ChecklistItemEntity>()
 
+    // Optional link to the operation store so the compare-and-set
+    // acknowledgement can update the sync operation in the same fake
+    // transaction, mirroring the real DAO.
+    var syncOperations: FakeSyncOperationDao? = null
+
     override suspend fun insertChecklistItem(item: ChecklistItemEntity) {
         store[item.id] = item
     }
@@ -326,6 +367,100 @@ class FakeChecklistItemDao : ChecklistItemDao {
             store[itemId] = it.copy(syncState = syncState, syncedVersion = syncedVersion)
         }
     }
+
+    override suspend fun getLocalRevision(itemId: String): Long? = store[itemId]?.localRevision
+
+    override suspend fun bumpLocalRevision(itemId: String): Int {
+        val current = store[itemId] ?: return 0
+        store[itemId] = current.copy(localRevision = current.localRevision + 1)
+        return 1
+    }
+
+    override suspend fun applyOutcome(
+        itemId: String,
+        outcome: String,
+        note: String?,
+        completed: Boolean,
+        syncState: String
+    ): Long {
+        setOutcome(itemId, outcome, note, completed, syncState)
+        bumpLocalRevision(itemId)
+        return getLocalRevision(itemId) ?: 0L
+    }
+
+    override suspend fun acknowledgeSyncedOutcome(
+        itemId: String,
+        operationId: String,
+        revision: Long,
+        syncedVersion: Int?,
+        attempts: Int,
+        now: Long
+    ): Boolean {
+        val itemRows = markItemSyncedIfRevision(
+            itemId = itemId,
+            syncState = ChecklistItemEntity.SYNC_STATE_SYNCED,
+            syncedVersion = syncedVersion,
+            revision = revision
+        )
+        val operationRows = syncOperations?.markOperationSyncedIfRevision(
+            operationId = operationId,
+            revision = revision,
+            attempts = attempts,
+            updatedAt = now
+        ) ?: 0
+        return itemRows > 0 && operationRows > 0
+    }
+
+    override suspend fun claimChecklistUpload(
+        operationId: String,
+        revision: Long,
+        attempts: Int,
+        now: Long
+    ): Boolean {
+        val rows = syncOperations?.markOperationUploadingIfRevision(
+            operationId = operationId,
+            revision = revision,
+            attempts = attempts,
+            updatedAt = now
+        ) ?: 0
+        return rows > 0
+    }
+
+    override suspend fun markItemSyncedIfRevision(
+        itemId: String,
+        syncState: String,
+        syncedVersion: Int?,
+        revision: Long
+    ): Int {
+        val current = store[itemId] ?: return 0
+        if (current.localRevision != revision) return 0
+        store[itemId] = current.copy(syncState = syncState, syncedVersion = syncedVersion)
+        return 1
+    }
+
+    override suspend fun markOperationUploadingIfRevision(
+        operationId: String,
+        revision: Long,
+        attempts: Int,
+        updatedAt: Long
+    ): Int = syncOperations?.markOperationUploadingIfRevision(
+        operationId,
+        revision,
+        attempts,
+        updatedAt
+    ) ?: 0
+
+    override suspend fun markOperationSyncedIfRevision(
+        operationId: String,
+        revision: Long,
+        attempts: Int,
+        updatedAt: Long
+    ): Int = syncOperations?.markOperationSyncedIfRevision(
+        operationId,
+        revision,
+        attempts,
+        updatedAt
+    ) ?: 0
 
     override suspend fun deleteForInspection(inspectionId: String) {
         store.values.filter { it.inspectionId == inspectionId }.map { it.id }
@@ -526,7 +661,8 @@ fun checklistItemEntity(
     outcome: String = ChecklistItemEntity.OUTCOME_NOT_STARTED,
     note: String? = null,
     syncedVersion: Int? = null,
-    syncState: String = ChecklistItemEntity.SYNC_STATE_LOCAL
+    syncState: String = ChecklistItemEntity.SYNC_STATE_LOCAL,
+    localRevision: Long = 0L
 ) = ChecklistItemEntity(
     id = id,
     inspectionId = inspectionId,
@@ -536,7 +672,8 @@ fun checklistItemEntity(
     outcome = outcome,
     note = note,
     syncedVersion = syncedVersion,
-    syncState = syncState
+    syncState = syncState,
+    localRevision = localRevision
 )
 
 fun evidenceEntity(

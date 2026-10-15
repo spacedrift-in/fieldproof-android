@@ -11,6 +11,35 @@ import java.io.File
 import java.util.UUID
 
 /**
+ * Outcome of importing a freshly captured file into the vault. Modelled
+ * explicitly so callers can never mistake an encryption failure for a success
+ * and silently persist the plaintext capture.
+ */
+sealed interface EvidenceImportResult {
+
+    /** URI to persist for a usable import, or null when the import failed. */
+    val storedUri: String?
+
+    /** The plaintext capture was encrypted and removed; persist [storedUri]. */
+    data class Sealed(override val storedUri: String) : EvidenceImportResult
+
+    /** The input was already sealed; persist it unchanged. */
+    data class AlreadySealed(override val storedUri: String) : EvidenceImportResult
+
+    /** Nothing the vault manages (null/blank or a non-file URI); persist as-is. */
+    data class Unmanaged(override val storedUri: String?) : EvidenceImportResult
+
+    /**
+     * The capture could not be secured (read/encrypt/delete failure). The
+     * plaintext must NOT be persisted or uploaded; the caller should surface
+     * the failure and let the user retry.
+     */
+    data class Failed(val reason: String) : EvidenceImportResult {
+        override val storedUri: String? = null
+    }
+}
+
+/**
  * Stores captured evidence on-device and reads it back for preview and upload.
  *
  * The production implementation encrypts every file with a device-bound Android
@@ -22,10 +51,10 @@ interface EvidenceVault {
 
     /**
      * Reads a freshly captured plaintext file at [rawUri], encrypts it, removes
-     * the plaintext and returns the URI of the sealed copy. Returns null when
-     * [rawUri] is unreadable, already sealed, or unmanaged.
+     * the plaintext and returns the sealed copy. Returns a typed
+     * [EvidenceImportResult] so a failure is never mistaken for a usable URI.
      */
-    suspend fun import(rawUri: String?): String?
+    suspend fun import(rawUri: String?): EvidenceImportResult
 
     /** Decrypts and returns the bytes for [localUri], or null if unreadable. */
     suspend fun read(localUri: String?): ByteArray?
@@ -57,14 +86,17 @@ class EncryptedEvidenceVault(
     private val io: CoroutineDispatcher = Dispatchers.IO
 ) : EvidenceVault {
 
-    override suspend fun import(rawUri: String?): String? {
-        val raw = fileFromUri(rawUri) ?: return null
-        if (!raw.exists()) return null
+    override suspend fun import(rawUri: String?): EvidenceImportResult {
+        if (rawUri.isNullOrBlank()) return EvidenceImportResult.Unmanaged(null)
+        val raw = fileFromUri(rawUri) ?: return EvidenceImportResult.Unmanaged(rawUri)
+        if (!raw.exists()) {
+            return EvidenceImportResult.Failed("The captured file no longer exists.")
+        }
 
         return try {
             val bytes = raw.readBytes()
             if (cipher.isSealed(bytes)) {
-                return null
+                return EvidenceImportResult.AlreadySealed(rawUri)
             }
 
             val sealed = withContext(io) {
@@ -74,10 +106,22 @@ class EncryptedEvidenceVault(
                 target
             }
 
+            // Only keep the sealed copy if the plaintext was actually removed;
+            // otherwise we would leave an unencrypted capture on disk.
+            if (!raw.delete()) {
+                sealed.delete()
+                return EvidenceImportResult.Failed(
+                    "The plaintext capture could not be removed."
+                )
+            }
+
+            EvidenceImportResult.Sealed(Uri.fromFile(sealed).toString())
+        } catch (exception: Exception) {
+            // Do not leave an unprotected capture behind on a failed import.
             raw.delete()
-            Uri.fromFile(sealed).toString()
-        } catch (_: Exception) {
-            null
+            EvidenceImportResult.Failed(
+                exception.message ?: "The capture could not be secured."
+            )
         }
     }
 
@@ -152,7 +196,8 @@ class EncryptedEvidenceVault(
  * installations receive [EncryptedEvidenceVault] through Hilt.
  */
 object PassthroughEvidenceVault : EvidenceVault {
-    override suspend fun import(rawUri: String?): String? = null
+    override suspend fun import(rawUri: String?): EvidenceImportResult =
+        EvidenceImportResult.Unmanaged(rawUri)
     override suspend fun read(localUri: String?): ByteArray? = null
     override suspend fun delete(localUri: String?): Boolean = false
     override suspend fun deleteAll(): Int = 0

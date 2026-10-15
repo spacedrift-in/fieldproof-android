@@ -63,11 +63,14 @@ class SyncRepository @Inject constructor(
     /**
      * Queue/refresh a checklist-outcome sync operation. The operation id is
      * deterministic per item, so repeated edits collapse into one pending
-     * UPDATE rather than piling up duplicate operations. The latest local
-     * outcome is read at upload time, so the newest edit always wins.
+     * UPDATE rather than piling up duplicate operations. [revision] is the
+     * item's local revision at the time of the edit; it is stored on the
+     * operation so the upload can be acknowledged only while it is still the
+     * latest (compare-and-set) revision.
      */
     suspend fun queueChecklistOutcome(
-        checklistItemId: String
+        checklistItemId: String,
+        revision: Long = 0L
     ) {
         val now = System.currentTimeMillis()
         syncOperationDao.insert(
@@ -80,7 +83,8 @@ class SyncRepository @Inject constructor(
                 attempts = 0,
                 lastError = null,
                 createdAt = now,
-                updatedAt = now
+                updatedAt = now,
+                revision = revision
             )
         )
     }

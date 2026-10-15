@@ -48,6 +48,16 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
 
+        // Inject the backend base URL at build time. Debug can use localhost over
+        // cleartext for local development; release defaults to HTTPS and must be
+        // overridden via environment/property to the production endpoint.
+        buildConfigField(
+            "String",
+            "API_BASE_URL",
+            envOrProperty("FIELD_PROOF_API_BASE_URL", "fieldproof.apiBaseUrl")?.let { "\"$it\"" }
+                ?: "\"http://127.0.0.1:8000/\""
+        )
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

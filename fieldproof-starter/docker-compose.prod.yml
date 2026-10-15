@@ -49,8 +49,9 @@ services:
       retries: 10
     logging: *default-logging
 
-  # Creates the private evidence bucket once MinIO is up. The API also applies
-  # a public-access block and lifecycle policy at startup.
+  # Creates the private evidence bucket once MinIO is up. The API applies a
+  # public-access block at startup and, only when EVIDENCE_S3_MANAGE_LIFECYCLE
+  # is enabled, merges its own tag-scoped lifecycle rules.
   createbuckets:
     image: minio/mc:latest
     depends_on:
@@ -76,9 +77,25 @@ services:
       start_period: 120s
     logging: *default-logging
 
-  api:
+  # Explicit schema upgrade (KL-003). Runs ``alembic upgrade head`` once before
+  # the API starts, so schema changes happen through a deliberate migration step
+  # rather than an implicit ``create_all``/DDL mutation at API startup.
+  migrate:
     build:
       context: ./backend
+    image: fieldproof-api:latest
+    command: ["python", "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"]
+    env_file: .env
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-fieldproof}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fieldproof}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    logging: *default-logging
+
+  api:
     image: fieldproof-api:latest
     restart: unless-stopped
     env_file: .env
@@ -104,6 +121,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     read_only: true

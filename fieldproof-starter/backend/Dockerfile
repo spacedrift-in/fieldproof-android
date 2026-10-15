@@ -26,6 +26,12 @@ RUN groupadd --system --gid 1001 app \
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 COPY app ./app
+# Schema management (KL-003): migrations ship in the image so the explicit
+# deploy/migrate step can run ``python -m alembic ... upgrade head``. The API
+# process itself never mutates the schema at startup (AUTO_CREATE_SCHEMA is off
+# in production); see docs/deployment.md.
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 # Writable location used only by the local (development) storage backend.
 RUN mkdir -p /var/lib/fieldproof/evidence \

@@ -22,6 +22,12 @@ lazily and cached in-process.
 Photo bytes are decrypted **in memory only** for display or upload. Decoded
 bitmaps are downsampled (`decodeSampledBitmap`) to bound memory.
 
+Sealing a capture can fail (keystore unavailable, unreadable capture, or the
+plaintext file could not be removed). `EvidenceVault.import` returns a typed
+`EvidenceImportResult` and a `Failed` result **aborts** the save: no evidence
+row, no sync operation, and the temporary plaintext file is deleted. The app
+asks the user to retake the photo rather than storing unencrypted bytes.
+
 ## 2. Backups and data extraction (Android)
 
 Automatic backup and device-to-device transfer are **disabled** outright:
@@ -86,17 +92,62 @@ the server copy — never from a device backup.
   evidence is never purged (`purgeExpiredEvidence`).
 - **Backend:** `POST /api/v1/maintenance/retention` deletes evidence uploaded
   more than `EVIDENCE_RETENTION_DAYS` ago, but **only for `APPROVED`
-  inspections**. Draft/submitted work is never purged. The endpoint requires
+  inspections**. Draft/submitted work is never purged, and evidence under a
+  legal hold (`fieldproof-legal-hold=true`) is skipped. The endpoint requires
   `X-Admin-Token` and there is no built-in scheduler — trigger it from cron.
+- **Object-store lifecycle:** S3 expiration is **tag-scoped** to
+  `fieldproof-retention=eligible`. Only the retention sweep applies that tag
+  (never for active work or legal holds), so a lifecycle rule can never delete
+  evidence the database still references. App-managed lifecycle is opt-in
+  (`EVIDENCE_S3_MANAGE_LIFECYCLE`) and merges rules instead of replacing the
+  bucket configuration.
 
-## 7. Configuration summary
+## 7. Transport security (Android)
+
+The backend endpoint is injected at build time (`BuildConfig.API_BASE_URL`,
+from `FIELD_PROOF_API_BASE_URL` / `fieldproof.apiBaseUrl`) — it is not a
+committed constant. The manifest routes all traffic through a network security
+config:
+
+- **Release:** `app/src/release/res/xml/network_security_config.xml` sets
+  `cleartextTrafficPermitted="false"`, so cleartext HTTP is rejected even if a
+  build accidentally points at an `http://` URL. Production builds **must**
+  inject an `https://…/` endpoint.
+- **Debug:** `app/src/debug/res/xml/network_security_config.xml` permits
+  cleartext so `http://127.0.0.1:8000/` works against a local backend.
+
+Network logging is `Level.NONE` in release and `Level.BASIC` (method/URL/status
+only, never bodies) in debug. Asserted by `NetworkConfigurationTest`.
+
+## 8. Configuration summary
 
 | Setting | Where | Default |
 |---|---|---|
 | Evidence encryption | Always on (release DI) | Keystore AES-256-GCM |
+| Evidence import failure | `EvidenceVault.import` | Abort save, delete plaintext |
 | Backups | `AndroidManifest.xml` | Disabled |
 | `FLAG_SECURE` screens | `SecureScreen()` | Detail + camera |
 | Debug logging | `BuildConfig.DEBUG` | Off in release |
+| API base URL | `BuildConfig.API_BASE_URL` | Injected; loopback default blocked in release |
+| Release cleartext | release network security config | Denied |
 | Local retention | `DEFAULT_RETENTION_DAYS` | 30 days |
 | `EVIDENCE_RETENTION_DAYS` | backend env | `0` (disabled) |
 | `RETENTION_ADMIN_TOKEN` | backend env | unset (endpoint `503`) |
+
+## 9. Backend diagnostics & abuse controls
+
+- **Log redaction (KL-034).** Backend logs are single-line JSON. A redaction
+  pass masks bearer/`Authorization` values, `token`/`secret`/`password`/`api_key`
+  values, and `x-admin-token`/`idempotency-key`/`x-tenant-id` values; entity ids
+  are normalized in paths. Photo bytes, evidence content, checklist notes and
+  reviewer comments are never placed on a log record. Asserted by
+  `tests/test_observability.py`.
+- **Metrics.** `GET /metrics` (optional `X-Admin-Token`) exposes request/latency
+  and error/conflict/rate-limit/storage/migration counters; it carries no
+  request bodies or client content (see `observability.md`).
+- **Rate limiting (KL-032).** The limiter keys on the client transport address (or
+  a single trusted edge header), evicts expired keys on a TTL and bounds key
+  cardinality. It does **not** trust the client-supplied `X-Tenant-Id` unless
+  `RATE_LIMIT_TRUST_TENANT_HEADER` is explicitly enabled for a single-tenant edge.
+- **No auth yet.** The API still has no authentication/authorization (KL-001);
+  these controls limit abuse and leakage, they do not authenticate callers.

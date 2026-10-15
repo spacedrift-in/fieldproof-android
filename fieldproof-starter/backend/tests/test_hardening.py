@@ -141,12 +141,21 @@ class FakeNotFound(Exception):
         self.response = {"Error": {"Code": "404"}}
 
 
-class FakeS3Client:
+class FakeNoLifecycle(Exception):
     def __init__(self):
+        self.response = {"Error": {"Code": "NoSuchLifecycleConfiguration"}}
+
+
+class FakeS3Client:
+    def __init__(self, *, lifecycle=None):
         self.calls = []
+        self.objects: dict[str, bytes] = {}
+        self.tags: dict[str, dict[str, str]] = {}
+        self.lifecycle = {"Rules": list(lifecycle)} if lifecycle is not None else None
 
     def put_object(self, **kwargs):
         self.calls.append(("put_object", kwargs))
+        self.objects[kwargs["Key"]] = kwargs.get("Body", b"")
 
     def get_object(self, **kwargs):
         return {"Body": io.BytesIO(b"payload")}
@@ -158,15 +167,57 @@ class FakeS3Client:
 
     def delete_object(self, **kwargs):
         self.calls.append(("delete_object", kwargs))
+        self.objects.pop(kwargs["Key"], None)
 
     def put_public_access_block(self, **kwargs):
         self.calls.append(("put_public_access_block", kwargs))
 
+    def get_bucket_lifecycle_configuration(self, **kwargs):
+        if self.lifecycle is None:
+            raise FakeNoLifecycle()
+        return self.lifecycle
+
     def put_bucket_lifecycle_configuration(self, **kwargs):
         self.calls.append(("put_bucket_lifecycle_configuration", kwargs))
+        self.lifecycle = kwargs["LifecycleConfiguration"]
+
+    def get_object_tagging(self, **kwargs):
+        tagset = [
+            {"Key": k, "Value": v} for k, v in self.tags.get(kwargs["Key"], {}).items()
+        ]
+        return {"TagSet": tagset}
+
+    def put_object_tagging(self, **kwargs):
+        self.calls.append(("put_object_tagging", kwargs))
+        self.tags[kwargs["Key"]] = {
+            t["Key"]: t["Value"] for t in kwargs["Tagging"]["TagSet"]
+        }
 
     def head_bucket(self, **kwargs):
         return {}
+
+
+def _expiration_rules(client):
+    if client.lifecycle is None:
+        return []
+    return [r for r in client.lifecycle["Rules"] if "Expiration" in r]
+
+
+def _simulate_lifecycle_expiry(client):
+    """Emulate S3 lifecycle: expire objects matching each rule's Filter."""
+    for rule in _expiration_rules(client):
+        flt = rule["Filter"]
+        prefix = flt.get("Prefix", "")
+        tag = None
+        for clause in flt.get("And", []):
+            if "Tag" in clause:
+                tag = (clause["Tag"]["Key"], clause["Tag"]["Value"])
+        for key in list(client.objects):
+            if not key.startswith(prefix):
+                continue
+            if tag is not None and client.tags.get(key, {}).get(tag[0]) != tag[1]:
+                continue
+            client.objects.pop(key, None)
 
 
 def test_s3_storage_prefixes_keys_and_encrypts():
@@ -201,24 +252,116 @@ def test_s3_storage_read_exists_delete_and_private():
     assert kwargs["PublicAccessBlockConfiguration"]["BlockPublicAcls"] is True
 
 
-def test_s3_storage_lifecycle_rule():
-    fake = FakeS3Client()
+def test_s3_storage_lifecycle_rules_are_scoped_and_merge():
+    existing = [
+        {
+            "ID": "org-wide-logs-retention",
+            "Filter": {"Prefix": "logs/"},
+            "Status": "Enabled",
+            "Expiration": {"Days": 30},
+        }
+    ]
+    fake = FakeS3Client(lifecycle=existing)
     storage = S3EvidenceStorage(
         "b",
         prefix="evidence",
         lifecycle_days=365,
         lifecycle_transition_days=30,
         lifecycle_glacier_days=90,
+        manage_lifecycle=True,
         client=fake,
     )
     storage.apply_lifecycle()
     _, kwargs = fake.calls[-1]
-    rule = kwargs["LifecycleConfiguration"]["Rules"][0]
-    assert rule["Filter"] == {"Prefix": "evidence"}
-    assert rule["Expiration"] == {"Days": 365}
-    assert {"Days": 30, "StorageClass": "STANDARD_IA"} in rule["Transitions"]
-    assert {"Days": 90, "StorageClass": "GLACIER"} in rule["Transitions"]
+    by_id = {r["ID"]: r for r in kwargs["LifecycleConfiguration"]["Rules"]}
+
+    # Unrelated bucket rules are preserved (no clobbering).
+    assert "org-wide-logs-retention" in by_id
+
+    # Transitions are prefix-scoped and non-destructive.
+    transition = by_id["fieldproof-evidence-transition"]
+    assert transition["Filter"] == {"Prefix": "evidence"}
+    assert {"Days": 30, "StorageClass": "STANDARD_IA"} in transition["Transitions"]
+    assert {"Days": 90, "StorageClass": "GLACIER"} in transition["Transitions"]
+
+    # Expiration only ever targets objects tagged eligible by the sweep.
+    expiration = by_id["fieldproof-evidence-expiration"]
+    assert expiration["Expiration"] == {"Days": 365}
+    assert expiration["Filter"] == {
+        "And": [
+            {"Prefix": "evidence"},
+            {"Tag": {"Key": "fieldproof-retention", "Value": "eligible"}},
+        ]
+    }
     assert storage.check() is True
+
+
+def test_s3_lifecycle_is_opt_in_and_never_clobbers_bucket():
+    existing = [{"ID": "org-wide", "Filter": {"Prefix": "x/"}, "Status": "Enabled"}]
+    fake = FakeS3Client(lifecycle=existing)
+    storage = S3EvidenceStorage(
+        "b", prefix="evidence", lifecycle_days=365, client=fake
+    )
+    storage.apply_lifecycle()
+    # No write by default; the operator's bucket config is untouched.
+    assert not any(name == "put_bucket_lifecycle_configuration" for name, _ in fake.calls)
+    assert fake.lifecycle == {"Rules": existing}
+
+
+def test_s3_lifecycle_removes_stale_managed_rule_without_touching_others():
+    existing = [
+        {"ID": "org-wide", "Filter": {"Prefix": "x/"}, "Status": "Enabled"},
+        {
+            "ID": "fieldproof-evidence-expiration",
+            "Filter": {"Prefix": "old"},
+            "Status": "Enabled",
+            "Expiration": {"Days": 1},
+        },
+    ]
+    fake = FakeS3Client(lifecycle=existing)
+    storage = S3EvidenceStorage("b", prefix="evidence", manage_lifecycle=True, client=fake)
+    storage.apply_lifecycle()
+    rules = fake.lifecycle["Rules"]
+    ids = {r["ID"] for r in rules}
+    assert ids == {"org-wide"}
+    assert rules[0] == existing[0]
+
+
+def test_s3_lifecycle_expires_only_tagged_eligible_objects():
+    fake = FakeS3Client()
+    storage = S3EvidenceStorage(
+        "b", prefix="evidence", manage_lifecycle=True, lifecycle_days=30, client=fake
+    )
+    draft = "evidence/tenants/t/inspections/d1/evidence/a.png"
+    submitted = "evidence/tenants/t/inspections/s1/evidence/b.png"
+    approved = "evidence/tenants/t/inspections/ap1/evidence/c.png"
+    fake.objects = {draft: b"draft", submitted: b"submitted", approved: b"approved"}
+
+    # Only the sweep-confirmed APPROVED object is tagged eligible.
+    assert storage.mark_retention_eligible("tenants/t/inspections/ap1/evidence/c.png")
+    storage.apply_lifecycle()
+    _simulate_lifecycle_expiry(fake)
+
+    assert set(fake.objects) == {draft, submitted}
+    assert approved not in fake.objects
+
+
+def test_s3_lifecycle_never_expires_a_legal_hold():
+    fake = FakeS3Client()
+    storage = S3EvidenceStorage(
+        "b", prefix="evidence", manage_lifecycle=True, lifecycle_days=30, client=fake
+    )
+    held = "evidence/tenants/t/inspections/ap1/evidence/held.png"
+    fake.objects = {held: b"held"}
+
+    storage.mark_legal_hold("tenants/t/inspections/ap1/evidence/held.png")
+    # Eligibility tagging must refuse under hold, so the object stays untagged.
+    assert storage.mark_retention_eligible("tenants/t/inspections/ap1/evidence/held.png") is False
+    assert storage.is_legal_hold("tenants/t/inspections/ap1/evidence/held.png") is True
+
+    storage.apply_lifecycle()
+    _simulate_lifecycle_expiry(fake)
+    assert held in fake.objects
 
 
 # ---------------------------------------------------------------------------
@@ -387,3 +530,118 @@ def test_rate_limit_returns_429(make_client):
     assert second.status_code == 404
     assert third.status_code == 429
     assert third.headers.get("retry-after") == "60"
+
+
+def test_rate_limit_ignores_rotated_tenant_header(make_client):
+    """Rotating X-Tenant-Id must not dodge the per-client quota (KL-032)."""
+    client = make_client(
+        RATE_LIMIT_ENABLED="true",
+        RATE_LIMIT_REQUESTS="2",
+        RATE_LIMIT_WINDOW_SECONDS="60",
+    )
+    missing = str(uuid.uuid4())
+    statuses = [
+        client.get(
+            f"/api/v1/inspections/{missing}", headers={"X-Tenant-Id": f"tenant{i}"}
+        ).status_code
+        for i in range(4)
+    ]
+    # The unauthenticated tenant header is not the limiter key, so the third
+    # request from the same client is rejected regardless of the header value.
+    assert statuses == [404, 404, 429, 429]
+
+
+def test_rate_limit_retry_after_stays_within_window(make_client):
+    client = make_client(
+        RATE_LIMIT_ENABLED="true",
+        RATE_LIMIT_REQUESTS="1",
+        RATE_LIMIT_WINDOW_SECONDS="60",
+    )
+    missing = str(uuid.uuid4())
+    client.get(f"/api/v1/inspections/{missing}")
+    rejected = client.get(f"/api/v1/inspections/{missing}")
+    assert rejected.status_code == 429
+    retry_after = int(rejected.headers["retry-after"])
+    # Stable and bounded by the window, never zero/negative.
+    assert 1 <= retry_after <= 60
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter internals (no database required)
+# ---------------------------------------------------------------------------
+
+def _limiter(**kwargs):
+    from backend.app.main import RateLimitMiddleware
+
+    async def _app(scope, receive, send):
+        return None
+
+    return RateLimitMiddleware(_app, **kwargs)
+
+
+def test_rate_limit_key_is_transport_ip_not_header():
+    limiter = _limiter(requests=2, window_seconds=60)
+    scope = {"client": ("203.0.113.7", 1234)}
+    assert limiter._client_key(scope, {}) == "203.0.113.7"
+    # A rotated tenant header does not change the key when tenant keying is off.
+    assert limiter._client_key(scope, {"x-tenant-id": "acme"}) == "203.0.113.7"
+
+    trusted = _limiter(requests=2, window_seconds=60, trust_tenant_header=True)
+    assert trusted._client_key(scope, {"x-tenant-id": "acme"}) == "203.0.113.7|acme"
+
+
+def test_rate_limit_uses_configured_client_ip_header():
+    limiter = _limiter(requests=2, window_seconds=60, client_ip_header="x-forwarded-for")
+    scope = {"client": ("10.0.0.1", 1234)}
+    key = limiter._client_key(scope, {"x-forwarded-for": "198.51.100.4, 10.0.0.1"})
+    assert key == "198.51.100.4"
+
+
+def test_rate_limit_purges_expired_windows():
+    limiter = _limiter(requests=2, window_seconds=60)
+    limiter._hits["stale"] = [100.0, 1]
+    limiter._hits["fresh"] = [180.0, 1]
+    limiter._purge_expired(now=200.0)
+    # 200-100 >= 60 -> stale evicted; 200-180 < 60 -> fresh retained.
+    assert list(limiter._hits) == ["fresh"]
+
+
+def test_rate_limit_evicts_oldest_at_capacity():
+    limiter = _limiter(requests=2, window_seconds=60, max_keys=2)
+    limiter._hits["a"] = [0.0, 1]
+    limiter._hits["b"] = [0.0, 1]
+    limiter._evict_oldest()
+    assert list(limiter._hits) == ["b"]
+
+
+def test_rate_limit_new_key_evicts_stale_at_capacity(monkeypatch):
+    """Cardinality stays bounded even when a client rotates its key."""
+    import asyncio
+
+    import backend.app.main as main_module
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(main_module.time, "monotonic", lambda: clock["now"])
+    limiter = _limiter(requests=2, window_seconds=30, max_keys=3)
+
+    async def _receive():
+        return {"type": "http.request"}
+
+    async def _send(message):
+        return None
+
+    async def _drive_all():
+        for ip in ("1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5"):
+            scope = {
+                "type": "http",
+                "path": "/api/v1/x",
+                "client": (ip, 1),
+                "headers": [],
+            }
+            await limiter(scope, _receive, _send)
+
+    asyncio.run(_drive_all())
+    # max_keys bounds the table regardless of how many distinct keys appear.
+    assert len(limiter._hits) <= 3
+
+

@@ -86,8 +86,10 @@ cross-tenant reads return `404`.
 - **Evidence storage:** files are written behind the `EvidenceStorage` abstraction
   (`backend/app/storage.py`). Development uses the local filesystem
   (`backend/var/evidence/`); production uses `S3EvidenceStorage` (private,
-  SSE-encrypted, lifecycle-managed object storage) via
-  `EVIDENCE_STORAGE_BACKEND=s3`.
+  SSE-encrypted object storage) via `EVIDENCE_STORAGE_BACKEND=s3`. Lifecycle
+  expiration is **tag-scoped** to objects the retention sweep marks eligible
+  (APPROVED only; legal holds excluded), and app-managed lifecycle is opt-in
+  (`EVIDENCE_S3_MANAGE_LIFECYCLE`) so it never clobbers unrelated bucket rules.
 - **Upload hardening:** size-bounded streaming (`413`), content-based MIME
   validation against `ALLOWED_IMAGE_TYPES` (`415`), and a malware-scanning
   integration point (`MALWARE_SCANNER`, `422`/`503`). Downloads are served with
@@ -123,7 +125,8 @@ If no `DATABASE_URL`/`TEST_DATABASE_URL` is set, the database-backed tests are
 | `EVIDENCE_STORAGE_DIR` | `backend/var/evidence` | Local directory (dev backend only) |
 | `EVIDENCE_S3_BUCKET` / `_REGION` / `_ENDPOINT_URL` / `_PREFIX` | — | Object storage target |
 | `EVIDENCE_S3_SSE` / `_KMS_KEY_ID` | `AES256` | Server-side encryption mode/key |
-| `EVIDENCE_S3_LIFECYCLE_*_DAYS` | `0` | Archive/expire transitions (`0` = off) |
+| `EVIDENCE_S3_LIFECYCLE_*_DAYS` | `0` | Prefix-scoped transitions; expiry is tag-scoped to sweep-eligible objects (`0` = off) |
+| `EVIDENCE_S3_MANAGE_LIFECYCLE` | `false` | Let the app write lifecycle rules (merges its own; default off = provision via IaC) |
 | `MAX_EVIDENCE_BYTES` | `10485760` | Maximum accepted upload size |
 | `ALLOWED_IMAGE_TYPES` | `image/jpeg,image/png,image/webp,image/heic,image/gif` | MIME allowlist |
 | `MALWARE_SCANNER` | `noop` | `noop` (dev) or `clamav` |

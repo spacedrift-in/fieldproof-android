@@ -75,3 +75,13 @@
       (`scripts/verify_clean_setup.sh`; versions in `README.md` and `docs/demo.md`)
 - [x] Demo explicitly identifies synthetic data and documents limitations.
       (`docs/demo.md` and `docs/known-limitations.md`)
+
+## Release verification gate (not executed here)
+
+The criteria above are satisfied by code + automated tests. Shipping a build
+additionally requires a **human** verification pass on real hardware — device
+matrix, offline/poor-network/camera/storage/reboot scenarios, accessibility
+(TalkBack/font scale/contrast), performance & battery thresholds, and a signed
+go/no-go report. That plan and the report template live in
+`docs/release-verification.md`; it is **pending execution** (no physical devices
+in this environment). Do not promote a build without the signed report.

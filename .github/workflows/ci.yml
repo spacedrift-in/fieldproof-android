@@ -144,5 +144,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
 
+      - name: Validate migrations (empty DB -> head, no model drift)
+        run: |
+          python -m alembic -c backend/alembic.ini upgrade head
+          python -m alembic -c backend/alembic.ini check
+
       - name: Run tests
         run: pytest -q

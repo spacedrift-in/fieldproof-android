@@ -170,8 +170,47 @@ class InspectionEvidenceLifecycleTest {
         assertTrue(db.syncOperationDao().getQueuedOperations().isEmpty())
     }
 
+    @Test
+    fun `addEvidence refuses to persist plaintext when encryption fails`() = runBlocking {
+        val failingDirectory = tempFolder.newFolder("fail-evidence")
+        val failingVault = EncryptedEvidenceVault(
+            directory = failingDirectory,
+            cipher = EvidenceCipher(EvidenceKeyProvider { throw IllegalStateException("keystore unavailable") })
+        )
+        val failingRepository = InspectionRepository(
+            inspectionDao = db.inspectionDao(),
+            checklistItemDao = db.checklistItemDao(),
+            evidenceDao = db.evidenceDao(),
+            syncRepository = SyncRepository(db.syncOperationDao()),
+            evidenceVault = failingVault
+        )
+
+        val inspection = failingRepository.createInspection("Facility", "Building")
+        val raw = rawFile("capture.jpg", "photo!".toByteArray())
+
+        val result = failingRepository.addEvidence(
+            inspectionId = inspection.id,
+            checklistItemId = null,
+            type = "PHOTO",
+            localUri = Uri.fromFile(raw).toString(),
+            note = null
+        )
+
+        assertTrue(result is AddEvidenceResult.EncryptionFailed)
+        assertTrue(
+            "evidence row must not be persisted",
+            db.evidenceDao().getForInspection(inspection.id).isEmpty()
+        )
+        val evidenceOps = db.syncOperationDao().observeOperations().first()
+            .filter { it.entityType == "EVIDENCE" }
+        assertTrue(evidenceOps.isEmpty())
+        assertFalse("plaintext capture must not be left behind", raw.exists())
+    }
+
     private suspend fun sealedEvidence(name: String, bytes: ByteArray): String {
-        return vault.import(Uri.fromFile(rawFile("$name.jpg", bytes)).toString())!!
+        val imported = vault.import(Uri.fromFile(rawFile("$name.jpg", bytes)).toString())
+        check(imported is com.spacedrift.fieldproof.security.EvidenceImportResult.Sealed)
+        return imported.storedUri
     }
 
     private fun evidence(

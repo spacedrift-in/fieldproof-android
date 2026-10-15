@@ -437,6 +437,66 @@ def test_checklist_outcome_rejects_unknown_item(client):
     assert response.status_code == 404
 
 
+def test_checklist_outcome_lost_response_retry_succeeds(client):
+    """A retry whose response was lost must confirm the committed replay.
+
+    The client sends v1→PASS, the server commits v2, but the 200 is lost. The
+    retry still carries ``expected_version=v1``. It must return success with the
+    already-committed state (no false 409, no extra version bump) so the client
+    can mark the item synced.
+    """
+    _, inspection_id, _, _ = _create(client)
+    item = _checklist_items(client, inspection_id)[0]
+    original_version = item["version"]
+
+    first = _set_outcome(
+        client,
+        inspection_id,
+        item["id"],
+        "PASS",
+        note="Clear",
+        expected_version=original_version,
+    )
+    assert first.status_code == 200
+    committed = first.json()
+
+    # Replay the exact same mutation with the now-stale expected_version.
+    replay = _set_outcome(
+        client,
+        inspection_id,
+        item["id"],
+        "PASS",
+        note="Clear",
+        expected_version=original_version,
+    )
+    assert replay.status_code == 200
+    assert replay.json()["item"]["version"] == committed["item"]["version"]
+    assert replay.json()["inspection_version"] == committed["inspection_version"]
+
+
+def test_checklist_outcome_stale_version_with_different_value_conflicts(client):
+    """A stale expected_version with a *different* value is a real conflict."""
+    _, inspection_id, _, _ = _create(client)
+    item = _checklist_items(client, inspection_id)[0]
+    original_version = item["version"]
+
+    assert _set_outcome(
+        client, inspection_id, item["id"], "PASS", expected_version=original_version
+    ).status_code == 200
+
+    # The item is now PASS; a retry asking for FAIL with the stale version must
+    # not silently overwrite — it is a conflicting later edit.
+    conflict = _set_outcome(
+        client,
+        inspection_id,
+        item["id"],
+        "FAIL",
+        expected_version=original_version,
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["current_status"] == "PASS"
+
+
 def test_checklist_outcome_rejected_after_submission(client):
     inspection_id = _submit_ready_inspection(client)
     item = _required_items(client, inspection_id)[0]

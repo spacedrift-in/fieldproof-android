@@ -11,7 +11,29 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from backend.app import db as db_module
+from backend.app import service
 from backend.app.models import Evidence, Inspection
+
+
+class FakeS3Storage:
+    """Minimal tag-aware object store used to observe sweep coordination."""
+
+    def __init__(self, *, held_keys=()):
+        self.held = set(held_keys)
+        self.tagged: list[str] = []
+        self.deleted: list[str] = []
+
+    def is_legal_hold(self, key: str) -> bool:
+        return key in self.held
+
+    def mark_retention_eligible(self, key: str) -> bool:
+        if key in self.held:
+            return False
+        self.tagged.append(key)
+        return True
+
+    def delete(self, key: str) -> None:
+        self.deleted.append(key)
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -180,6 +202,67 @@ def test_retention_purges_only_old_approved_evidence(make_client, tmp_path):
     assert draft_rows == 1
 
 
+def test_retention_tags_only_approved_evidence_for_lifecycle(make_client):
+    client = make_client(
+        RETENTION_ADMIN_TOKEN="s3cret", EVIDENCE_RETENTION_DAYS="30"
+    )
+
+    approved_id = _create(client, title="Old approved")
+    _upload(client, approved_id)
+    submitted_id = _create(client, title="Old submitted")
+    _upload(client, submitted_id)
+    draft_id = _create(client, title="Old draft")
+    _upload(client, draft_id)
+
+    _age_and_finalize(approved_id, days_old=40, approve=True)
+    _age_and_finalize(submitted_id, days_old=40, status="SUBMITTED")
+    _age_and_finalize(draft_id, days_old=40, status="DRAFT")
+
+    fake = FakeS3Storage()
+    with db_module.get_session_factory()() as session:
+        result = service.purge_expired_evidence(
+            session, retention_days=30, storage=fake
+        )
+
+    # Only the APPROVED object is tagged eligible (and directly deleted).
+    assert result["purged"] == 1
+    assert result["legal_held"] == 0
+    assert len(fake.tagged) == 1
+    assert len(fake.deleted) == 1
+    assert approved_id in fake.tagged[0]
+
+    # DB metadata stays in lockstep: approved row gone, active work retained.
+    with db_module.get_session_factory()() as session:
+        assert _evidence_rows(session, approved_id) == 0
+        assert _evidence_rows(session, submitted_id) == 1
+        assert _evidence_rows(session, draft_id) == 1
+
+
+def test_retention_skips_legal_hold_evidence(make_client):
+    client = make_client(
+        RETENTION_ADMIN_TOKEN="s3cret", EVIDENCE_RETENTION_DAYS="30"
+    )
+    approved_id = _create(client, title="Held approved")
+    _upload(client, approved_id)
+    _age_and_finalize(approved_id, days_old=40, approve=True)
+
+    with db_module.get_session_factory()() as session:
+        keys = {ev.storage_key for ev in session.query(Evidence).all()}
+
+    fake = FakeS3Storage(held_keys=keys)
+    with db_module.get_session_factory()() as session:
+        result = service.purge_expired_evidence(
+            session, retention_days=30, storage=fake
+        )
+
+    assert result["purged"] == 0
+    assert result["legal_held"] == 1
+    assert fake.tagged == []
+    assert fake.deleted == []
+    with db_module.get_session_factory()() as session:
+        assert _evidence_rows(session, approved_id) == 1
+
+
 def test_retention_days_zero_disables_sweep(make_client):
     client = make_client(RETENTION_ADMIN_TOKEN="s3cret", EVIDENCE_RETENTION_DAYS="0")
     inspection_id = _create(client)
@@ -193,11 +276,13 @@ def test_retention_days_zero_disables_sweep(make_client):
     assert response.json()["purged"] == 0
 
 
-def _age_and_finalize(inspection_id: str, *, days_old: int, approve: bool) -> None:
+def _age_and_finalize(
+    inspection_id: str, *, days_old: int, approve: bool = False, status: str | None = None
+) -> None:
     old = datetime.now(timezone.utc) - timedelta(days=days_old)
     with db_module.get_session_factory()() as session:
         inspection = session.get(Inspection, uuid.UUID(inspection_id))
-        inspection.status = "APPROVED" if approve else "DRAFT"
+        inspection.status = status or ("APPROVED" if approve else "DRAFT")
         for evidence in session.query(Evidence).filter(
             Evidence.inspection_id == uuid.UUID(inspection_id)
         ):

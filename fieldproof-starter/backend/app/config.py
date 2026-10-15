@@ -68,6 +68,12 @@ class Settings:
     s3_lifecycle_days: int
     s3_lifecycle_transition_days: int
     s3_lifecycle_glacier_days: int
+    # Whether the app may write the bucket lifecycle configuration at startup.
+    # Default off: provision lifecycle via infrastructure management (Terraform/
+    # CloudFormation) so app startup never clobbers unrelated bucket rules. When
+    # enabled the app merges only its own rules and only expires objects tagged
+    # eligible by the retention sweep (active work and legal holds are excluded).
+    s3_manage_lifecycle: bool
 
     # --- Upload hardening -------------------------------------------------
     malware_scanner: str  # "noop" or "clamav"
@@ -92,12 +98,43 @@ class Settings:
     rate_limit_enabled: bool
     rate_limit_requests: int
     rate_limit_window_seconds: int
+    # Maximum number of distinct client keys tracked in the in-process limiter
+    # before the oldest window is evicted. Bounds memory so a client rotating
+    # identifiers cannot grow the table without limit (see KL-032).
+    rate_limit_max_keys: int
+    # Name of a header (e.g. ``x-forwarded-for``) that a *trusted* ingress sets
+    # to the real client address. Only enable this when a trusted proxy
+    # overwrites the header; otherwise the limiter keys on the transport peer.
+    rate_limit_client_ip_header: str | None
+    # Opt-in per-tenant keying. Disabled by default because the tenant header is
+    # unauthenticated until SPA-51; enabling it re-opens the header-rotation
+    # bypass and is only safe once a verified principal exists.
+    rate_limit_trust_tenant_header: bool
+
+    # --- Observability ----------------------------------------------------
+    # Expose the Prometheus text endpoint. When a token is set it is required in
+    # ``X-Admin-Token``; otherwise the endpoint is intended to be reachable only
+    # from the cluster/ingress (documented in docs/observability.md).
+    metrics_enabled: bool
+    metrics_admin_token: str | None
+
+    # --- Schema management ------------------------------------------------
+    # Whether startup may run ``create_all`` to bootstrap a demo/development
+    # schema. This is a demo convenience only: in production it is off so
+    # startup never performs implicit structural changes (KL-003); the schema is
+    # managed by migrations instead (see alembic.ini / backend/migrations).
+    auto_create_schema: bool
+    # Opt-in to run ``alembic upgrade head`` during app startup. Off by default:
+    # migrations are run explicitly by the deploy/CI step, never implicitly.
+    run_migrations_on_start: bool
 
 
 def get_settings() -> Settings:
     storage_override = os.getenv("EVIDENCE_STORAGE_DIR")
+    environment = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+    production = environment in ("production", "prod", "staging")
     return Settings(
-        environment=os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower(),
+        environment=environment,
         database_url=os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL),
         app_version=os.getenv("APP_VERSION", "0.3.0"),
         docs_enabled=_env_bool("DOCS_ENABLED", True),
@@ -119,6 +156,7 @@ def get_settings() -> Settings:
         s3_lifecycle_days=_env_int("EVIDENCE_S3_LIFECYCLE_DAYS", 0),
         s3_lifecycle_transition_days=_env_int("EVIDENCE_S3_LIFECYCLE_TRANSITION_DAYS", 0),
         s3_lifecycle_glacier_days=_env_int("EVIDENCE_S3_LIFECYCLE_GLACIER_DAYS", 0),
+        s3_manage_lifecycle=_env_bool("EVIDENCE_S3_MANAGE_LIFECYCLE", False),
         malware_scanner=os.getenv("MALWARE_SCANNER", "noop").strip().lower(),
         clamav_host=os.getenv("CLAMAV_HOST", "127.0.0.1"),
         clamav_port=_env_int("CLAMAV_PORT", 3310),
@@ -131,4 +169,14 @@ def get_settings() -> Settings:
         rate_limit_enabled=_env_bool("RATE_LIMIT_ENABLED", False),
         rate_limit_requests=_env_int("RATE_LIMIT_REQUESTS", 120),
         rate_limit_window_seconds=_env_int("RATE_LIMIT_WINDOW_SECONDS", 60),
+        rate_limit_max_keys=_env_int("RATE_LIMIT_MAX_KEYS", 10000),
+        rate_limit_client_ip_header=(
+            os.getenv("RATE_LIMIT_CLIENT_IP_HEADER", "").strip().lower() or None
+        ),
+        rate_limit_trust_tenant_header=_env_bool("RATE_LIMIT_TRUST_TENANT_HEADER", False),
+        metrics_enabled=_env_bool("METRICS_ENABLED", True),
+        metrics_admin_token=os.getenv("METRICS_ADMIN_TOKEN") or None,
+        # Demo/development bootstraps its own schema; production never does.
+        auto_create_schema=_env_bool("AUTO_CREATE_SCHEMA", not production),
+        run_migrations_on_start=_env_bool("RUN_MIGRATIONS_ON_START", False),
     )

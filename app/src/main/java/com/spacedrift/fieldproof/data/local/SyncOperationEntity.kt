@@ -18,5 +18,9 @@ data class SyncOperationEntity(
     // non-conflict operations.
     val conflictDetail: String? = null,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    // The checklist-item local revision this operation uploads. Status changes
+    // that ack the upload are guarded by this value so a stale upload cannot
+    // acknowledge a newer queued operation for the same item.
+    val revision: Long = 0L
 )

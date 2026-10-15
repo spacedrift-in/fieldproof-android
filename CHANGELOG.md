@@ -147,6 +147,63 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   comments) before rendering PDF paragraphs, so characters like `&` or `<` no
   longer abort report export.
 - Include a traceable evidence id in the PDF report's evidence references.
+- Scope S3 lifecycle expiration to objects explicitly tagged
+  `fieldproof-retention=eligible` (only the APPROVED-only retention sweep tags
+  them; legal holds are refused and skipped), so enabling
+  `EVIDENCE_S3_LIFECYCLE_DAYS` can no longer delete still-active evidence and
+  leave database rows pointing at missing objects (KL-028). App-managed
+  lifecycle is now opt-in (`EVIDENCE_S3_MANAGE_LIFECYCLE`, default `false`) and
+  merges its own rules by id instead of full-replacing the bucket lifecycle
+  configuration, so unrelated bucket rules are never clobbered.
+- Close the checklist-outcome sync race. Every local edit now bumps
+  `checklist_items.localRevision` and stores that revision on the
+  `checklist:<itemId>` operation; a completed upload is acknowledged (item and
+  operation marked `SYNCED`) only through a **compare-and-set** that requires
+  both revisions to still match, executed in a single Room transaction
+  (`ChecklistItemDao.acknowledgeSyncedOutcome`, Room migration 3→4). A slower
+  in-flight upload can therefore never overwrite a newer queued edit — before,
+  it was `SYNCED` while the newer change stayed stuck `QUEUED`. Covered by
+  `SyncRunnerTest` (interrupted/edit-mid-upload regression) and
+  `RoomPersistenceTest` (CAS on the real database).
+- Never persist or upload unencrypted photo evidence. `EvidenceVault.import`
+  now returns a typed `EvidenceImportResult` (`Sealed` / `AlreadySealed` /
+  `Unmanaged` / `Failed`), and `InspectionRepository.addEvidence` aborts the
+  save on `Failed` instead of falling back to the plaintext capture URI (the
+  previous `import(uri) ?: uri` path silently stored plaintext). A failed seal
+  also deletes the temporary plaintext file, the user is told to retake the
+  photo, and no evidence row or sync operation is created
+  (`InspectionEvidenceLifecycleTest`, `EncryptedEvidenceVaultTest`).
+- Block cleartext HTTP in release builds and stop hard-coding the backend URL.
+  The base URL is injected at build time (`BuildConfig.API_BASE_URL`, from
+  `FIELD_PROOF_API_BASE_URL` / the `fieldproof.apiBaseUrl` Gradle property), the
+  manifest declares `networkSecurityConfig`, release permits HTTPS only
+  (`network_security_config.xml` denies cleartext) while debug still allows
+  localhost cleartext for development. Asserted by `NetworkConfigurationTest`.
+- Harden the backend rate limiter (KL-032). The limiter now keys on the client
+  transport address (optionally a single configured, trusted header such as
+  `X-Real-IP`) instead of the unverified `X-Tenant-Id`, evicts expired keys on a
+  TTL and bounds total key cardinality (`RATE_LIMIT_MAX_KEYS`) so memory cannot
+  grow without limit, and returns a stable `Retry-After`. `/metrics` is exempt
+  and the tenant id is only folded into the key when
+  `RATE_LIMIT_TRUST_TENANT_HEADER` is explicitly enabled (single-tenant edge).
+  Covered by `test_hardening.py`.
+- Make checklist-outcome sync idempotent (KL-033). Replaying a lost-response
+  upload of an already-committed outcome now returns the current item without
+  bumping the version or raising a false 409; only a genuinely different later
+  edit on a stale version still conflicts
+  (`update_checklist_outcome`, `test_inspections.py`).
+- Add structured, privacy-reviewed observability (KL-034). Logs are single-line
+  JSON with credentials/notes redacted and entity ids normalized, every request
+  emits one `http_request` record plus an `X-Request-Id`, and `GET /metrics`
+  exposes Prometheus counters/summaries (requests, latency, API errors, sync
+  conflicts, rate-limit rejections, storage failures, migrations) with an
+  optional `X-Admin-Token`. Covered by `test_observability.py`.
+- Replace implicit `create_all` with Alembic migrations (KL-003). An initial
+  migration creates the schema, `db.run_migrations()` applies it explicitly, the
+  production compose runs a dedicated `migrate` service before `api` starts, and
+  CI validates an empty-DB upgrade plus `alembic check` for model drift.
+  Production startup never mutates the schema (`AUTO_CREATE_SCHEMA` /
+  `RUN_MIGRATIONS_ON_START` default off). Covered by `test_migrations.py`.
 
 ## [0.0.1] - 2026-10-10
 

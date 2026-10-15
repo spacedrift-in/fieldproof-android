@@ -309,8 +309,20 @@ class SyncRunner @Inject constructor(
         }
 
         val attempted = operation.copy(attempts = operation.attempts + 1)
+        val revision = item.localRevision
 
-        syncRepository.markUploading(operation)
+        // Compare-and-set claim before uploading. If a newer local edit replaced
+        // this queued operation (same deterministic id) while it waited, our
+        // revision is stale: skip it and let the newer operation upload instead.
+        if (!checklistItemDao.claimChecklistUpload(
+                operationId = operation.id,
+                revision = revision,
+                attempts = attempted.attempts,
+                now = System.currentTimeMillis()
+            )
+        ) {
+            return Outcome.ShouldRetry
+        }
         checklistItemDao.updateSyncState(item.id, STATUS_UPLOADING)
 
         return when (
@@ -320,13 +332,18 @@ class SyncRunner @Inject constructor(
             )
         ) {
             is ChecklistOutcomeUploadResult.Success -> {
-                syncRepository.markSynced(attempted)
-                checklistItemDao.markSynced(
+                // Acknowledge the exact revision we uploaded. If a newer edit
+                // landed mid-flight the CAS fails, leaving that edit queued for
+                // the next run instead of overwriting it with this result.
+                val acknowledged = checklistItemDao.acknowledgeSyncedOutcome(
                     itemId = item.id,
-                    syncState = STATUS_SYNCED,
-                    syncedVersion = result.itemVersion
+                    operationId = operation.id,
+                    revision = revision,
+                    syncedVersion = result.itemVersion,
+                    attempts = attempted.attempts,
+                    now = System.currentTimeMillis()
                 )
-                Outcome.Finished
+                if (acknowledged) Outcome.Finished else Outcome.ShouldRetry
             }
 
             is ChecklistOutcomeUploadResult.Conflict -> {

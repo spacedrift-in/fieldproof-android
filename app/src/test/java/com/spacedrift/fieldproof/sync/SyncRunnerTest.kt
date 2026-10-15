@@ -12,6 +12,7 @@ import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
 import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploadResult
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploader
 import com.spacedrift.fieldproof.data.remote.EvidenceUploadResult
 import com.spacedrift.fieldproof.data.remote.InspectionUploadResult
 import com.spacedrift.fieldproof.data.repository.SyncRepository
@@ -29,13 +30,13 @@ class SyncRunnerTest {
     private val syncDao = FakeSyncOperationDao()
     private val inspectionDao = FakeInspectionDao()
     private val evidenceDao = FakeEvidenceDao()
-    private val checklistItemDao = FakeChecklistItemDao()
+    private val checklistItemDao = FakeChecklistItemDao().also { it.syncOperations = syncDao }
     private val syncRepository = SyncRepository(syncDao)
 
     private fun runner(
         uploader: FakeEvidenceUploader,
         inspectionUploader: FakeInspectionUploader = FakeInspectionUploader(),
-        checklistUploader: FakeChecklistOutcomeUploader = FakeChecklistOutcomeUploader()
+        checklistUploader: ChecklistOutcomeUploader = FakeChecklistOutcomeUploader()
     ) = SyncRunner(
         syncRepository = syncRepository,
         inspectionDao = inspectionDao,
@@ -493,5 +494,58 @@ class SyncRunnerTest {
 
         assertEquals(SyncRunResult.AllDone, result)
         assertEquals("FAILED", syncDao.findByEntityId("does-not-exist")!!.status)
+    }
+
+    @Test
+    fun `edit during in-flight upload does not overwrite the newer edit`() = runBlocking {
+        val item = checklistItemEntity(
+            id = "c1",
+            inspectionId = "i1",
+            outcome = ChecklistItemEntity.OUTCOME_PASS,
+            completed = true,
+            syncState = ChecklistItemEntity.SYNC_STATE_QUEUED
+        )
+        queueChecklist(item)
+
+        // While the revision-0 upload is in flight, the user edits the item
+        // again. This bumps the item to revision 1 and replaces the queued
+        // operation (same deterministic id) with one carrying revision 1.
+        val editingUploader = object : ChecklistOutcomeUploader {
+            override suspend fun uploadChecklistOutcome(
+                item: ChecklistItemEntity,
+                idempotencyKey: String
+            ): ChecklistOutcomeUploadResult {
+                val newRevision = checklistItemDao.applyOutcome(
+                    itemId = item.id,
+                    outcome = ChecklistItemEntity.OUTCOME_FAIL,
+                    note = "edited mid-flight",
+                    completed = true,
+                    syncState = ChecklistItemEntity.SYNC_STATE_QUEUED
+                )
+                syncRepository.queueChecklistOutcome(item.id, newRevision)
+                return ChecklistOutcomeUploadResult.Success(itemVersion = 5, inspectionVersion = 2)
+            }
+        }
+
+        val first = runner(FakeEvidenceUploader(), checklistUploader = editingUploader).run()
+
+        // The stale revision-0 upload must not be acknowledged: the newer edit
+        // stays queued (and is not marked SYNCED) and the run retries.
+        assertEquals(SyncRunResult.Retry, first)
+        assertEquals(ChecklistItemEntity.SYNC_STATE_QUEUED, checklistItemDao.get("c1")!!.syncState)
+        assertEquals(1L, checklistItemDao.get("c1")!!.localRevision)
+        assertEquals("QUEUED", syncDao.findByEntityId("c1")!!.status)
+        assertEquals(1L, syncDao.findByEntityId("c1")!!.revision)
+
+        // The next run uploads the newer revision and converges.
+        val second = runner(
+            FakeEvidenceUploader(),
+            checklistUploader = FakeChecklistOutcomeUploader()
+        ).run()
+
+        assertEquals(SyncRunResult.AllDone, second)
+        assertEquals(ChecklistItemEntity.SYNC_STATE_SYNCED, checklistItemDao.get("c1")!!.syncState)
+        assertEquals(ChecklistItemEntity.OUTCOME_FAIL, checklistItemDao.get("c1")!!.outcome)
+        assertEquals("SYNCED", syncDao.findByEntityId("c1")!!.status)
     }
 }

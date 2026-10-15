@@ -11,6 +11,7 @@ import com.spacedrift.fieldproof.data.local.SyncOperationEntity
 import com.spacedrift.fieldproof.data.remote.InspectionWorkflowClient
 import com.spacedrift.fieldproof.data.remote.RemoteReport
 import com.spacedrift.fieldproof.data.remote.WorkflowResult
+import com.spacedrift.fieldproof.data.repository.AddEvidenceResult
 import com.spacedrift.fieldproof.data.repository.ConflictResolver
 import com.spacedrift.fieldproof.data.repository.InspectionRepository
 import com.spacedrift.fieldproof.data.repository.SyncRepository
@@ -391,13 +392,24 @@ class InspectionViewModel @Inject constructor(
         note: String?
     ) {
         viewModelScope.launch {
-            repository.addEvidence(
+            val result = repository.addEvidence(
                 inspectionId = inspectionId,
                 checklistItemId = checklistItemId,
                 type = type,
                 localUri = localUri,
                 note = note
             )
+            if (result is AddEvidenceResult.EncryptionFailed) {
+                // The capture was not stored (plaintext is never kept), so tell
+                // the user rather than silently dropping it.
+                _workflow.update { state ->
+                    state.copy(
+                        message = "Couldn't secure the photo on this device, so it " +
+                            "wasn't saved. Please retake it."
+                    )
+                }
+                return@launch
+            }
             // Evidence is persisted and the upload operation queued; schedule the
             // unique sync work so it executes as soon as the device is online.
             syncScheduler.enqueueSync()

@@ -7,11 +7,25 @@ import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionDao
 import com.spacedrift.fieldproof.data.local.InspectionEntity
 import com.spacedrift.fieldproof.data.local.InspectionSummaryEntity
+import com.spacedrift.fieldproof.security.EvidenceImportResult
 import com.spacedrift.fieldproof.security.EvidenceVault
 import com.spacedrift.fieldproof.security.PassthroughEvidenceVault
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 import javax.inject.Inject
+
+/** Result of attempting to record new evidence. */
+sealed interface AddEvidenceResult {
+
+    /** The evidence was secured (when applicable), persisted and queued. */
+    data object Saved : AddEvidenceResult
+
+    /**
+     * The capture could not be encrypted, so it was deliberately not persisted
+     * or queued. The user should be shown [reason] and can retry the capture.
+     */
+    data class EncryptionFailed(val reason: String) : AddEvidenceResult
+}
 
 class InspectionRepository @Inject constructor(
     private val inspectionDao: InspectionDao,
@@ -106,14 +120,14 @@ class InspectionRepository @Inject constructor(
         outcome: String,
         note: String?
     ) {
-        checklistItemDao.setOutcome(
+        val revision = checklistItemDao.applyOutcome(
             itemId = itemId,
             outcome = outcome,
             note = note,
             completed = outcome != ChecklistItemEntity.OUTCOME_NOT_STARTED,
             syncState = ChecklistItemEntity.SYNC_STATE_QUEUED
         )
-        syncRepository.queueChecklistOutcome(itemId)
+        syncRepository.queueChecklistOutcome(itemId, revision)
     }
 
     suspend fun addEvidence(
@@ -122,14 +136,21 @@ class InspectionRepository @Inject constructor(
         type: String,
         localUri: String?,
         note: String?
-    ) {
+    ): AddEvidenceResult {
         val evidenceId = UUID.randomUUID().toString()
 
         // Encrypt photo evidence at rest before it is persisted. The camera
         // writes a short-lived plaintext file; the vault seals it with the
-        // device-bound key and deletes the plaintext copy.
-        val sealedUri = if (type.equals("PHOTO", ignoreCase = true)) {
-            evidenceVault.import(localUri) ?: localUri
+        // device-bound key and deletes the plaintext copy. If sealing fails we
+        // must NOT fall back to the plaintext URI — that would persist (and
+        // later upload) unencrypted evidence — so the save is aborted.
+        val storedUri = if (type.equals("PHOTO", ignoreCase = true)) {
+            when (val imported = evidenceVault.import(localUri)) {
+                is EvidenceImportResult.Failed ->
+                    return AddEvidenceResult.EncryptionFailed(imported.reason)
+
+                else -> imported.storedUri
+            }
         } else {
             localUri
         }
@@ -139,7 +160,7 @@ class InspectionRepository @Inject constructor(
             inspectionId = inspectionId,
             checklistItemId = checklistItemId,
             type = type,
-            localUri = sealedUri,
+            localUri = storedUri,
             note = note,
             capturedAt = System.currentTimeMillis(),
             syncStatus = "QUEUED"
@@ -150,6 +171,8 @@ class InspectionRepository @Inject constructor(
 
         // 2. Create a durable sync operation.
         syncRepository.queueEvidence(evidenceId)
+
+        return AddEvidenceResult.Saved
     }
 
     /**

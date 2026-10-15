@@ -40,7 +40,8 @@ object AppModule {
         )
             .addMigrations(
                 FieldProofDatabase.MIGRATION_1_2,
-                FieldProofDatabase.MIGRATION_2_3
+                FieldProofDatabase.MIGRATION_2_3,
+                FieldProofDatabase.MIGRATION_3_4
             )
             .build()
     }

@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         EvidenceEntity::class,
         SyncOperationEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class FieldProofDatabase : RoomDatabase() {
@@ -60,6 +60,27 @@ abstract class FieldProofDatabase : RoomDatabase() {
                 db.execSQL(
                     "ALTER TABLE checklist_items ADD COLUMN syncState TEXT NOT NULL " +
                         "DEFAULT 'LOCAL'"
+                )
+            }
+        }
+
+        /**
+         * Adds the compare-and-set revision columns that make checklist-outcome
+         * sync safe under an interrupted/resumed race. `checklist_items.localRevision`
+         * counts local edits; `sync_operations.revision` records which edit an
+         * operation uploads. A successful upload only acknowledges the item/operation
+         * whose revision still matches, so a slow upload cannot overwrite a newer
+         * local edit. Non-destructive: existing rows start at revision 0.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE checklist_items ADD COLUMN localRevision INTEGER " +
+                        "NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE sync_operations ADD COLUMN revision INTEGER " +
+                        "NOT NULL DEFAULT 0"
                 )
             }
         }

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from . import domain, idempotency
 from .demo_data import DEMO_TEMPLATE, DEMO_TEMPLATE_ID
 from .models import ChecklistItem, Evidence, Inspection, Review, utcnow
+from .observability import metrics
 from .schemas import (
     ChecklistItemOut,
     ChecklistOutcomeUpdate,
@@ -123,9 +124,13 @@ def update_checklist_outcome(
 ) -> tuple[Inspection, ChecklistItem]:
     """Set a checklist item's outcome/note with optimistic concurrency.
 
-    Retries are safe: repeating the same outcome/note is an idempotent no-op that
-    does not bump any version. A stale ``expected_version`` raises 409 with the
-    item's current version so the client can present a conflict.
+    Replay semantics (lost-response safe): if the item already holds exactly the
+    requested status/note, the request is treated as a replay of an already
+    committed mutation, regardless of ``expected_version``, and returns the
+    current item **without** bumping any version. This distinguishes the same
+    committed operation from a conflicting later edit: a stale
+    ``expected_version`` only raises 409 when the server state no longer matches
+    the request (i.e. someone else changed it to something different).
     """
     inspection = _load_inspection(db, inspection_id, tenant_id)
 
@@ -147,6 +152,18 @@ def update_checklist_outcome(
             detail=f"status must be one of {sorted(domain.ChecklistItemStatus.ALL)}",
         )
 
+    normalized_note = payload.note.strip() if (payload.note and payload.note.strip()) else None
+
+    # Replay check must come *before* the version check. A retry of an update
+    # whose response was lost carries the pre-mutation ``expected_version``; the
+    # server already applied it, so the item matches the request exactly and we
+    # confirm the replay without bumping any version. Checking the version first
+    # turned that legitimate retry into a false 409 (KL-033). A genuine conflict
+    # (the item was since changed to something else) still fails the version
+    # check below.
+    if item.status == payload.status and (item.note or None) == normalized_note:
+        return inspection, item
+
     if (
         payload.expected_version is not None
         and payload.expected_version != item.version
@@ -159,10 +176,6 @@ def update_checklist_outcome(
                 "checklist_item_id": str(item.id),
             }
         )
-
-    normalized_note = payload.note.strip() if (payload.note and payload.note.strip()) else None
-    if item.status == payload.status and (item.note or None) == normalized_note:
-        return inspection, item
 
     item.status = payload.status
     item.note = normalized_note
@@ -259,6 +272,7 @@ def upload_evidence(
     inspection.updated_at = utcnow()
     db.commit()
     db.refresh(evidence)
+    metrics.inc("evidence_uploads_total", {"kind": kind})
     return evidence
 
 
@@ -289,8 +303,43 @@ def _delete_objects(storage: EvidenceStorage, keys: list[str]) -> int:
             storage.delete(key)
             deleted += 1
         except Exception:  # noqa: BLE001
+            metrics.inc("storage_failures_total", {"operation": "delete"})
             logger.warning("Failed to delete evidence object %s", key, exc_info=True)
     return deleted
+
+
+def _is_legal_hold(storage: EvidenceStorage, key: str) -> bool:
+    """Return True when an object is under legal hold.
+
+    Object stores that do not support tags (the local dev backend) are never
+    held. A failure to *check* is treated as held (fail safe) so a transient
+    object-store error cannot cause an object under litigation hold to be
+    purged.
+    """
+    checker = getattr(storage, "is_legal_hold", None)
+    if checker is None:
+        return False
+    try:
+        return bool(checker(key))
+    except Exception:  # noqa: BLE001
+        logger.warning("Legal-hold check failed for %s; treating as held", key, exc_info=True)
+        return True
+
+
+def _mark_retention_eligible(storage: EvidenceStorage, key: str) -> None:
+    """Tag an object so the S3 lifecycle rule may expire it later.
+
+    This is the coordination point between the database and object storage: the
+    sweep decides eligibility (APPROVED + past retention) and only then tags the
+    object. Stores without tag support ignore this.
+    """
+    marker = getattr(storage, "mark_retention_eligible", None)
+    if marker is None:
+        return
+    try:
+        marker(key)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to tag %s eligible for lifecycle expiry", key, exc_info=True)
 
 
 def delete_inspection(
@@ -367,11 +416,14 @@ def purge_expired_evidence(
     """Retention sweep: delete evidence uploaded more than ``retention_days`` ago.
 
     Only evidence attached to a *finalized* (APPROVED) inspection is eligible:
-    active drafts and submitted work are never purged. A non-positive
-    ``retention_days`` disables the sweep.
+    active drafts and submitted work are never purged. Objects under legal hold
+    are skipped entirely. Eligible objects are also tagged so the object-store
+    lifecycle rule (which only targets tagged objects) can expire them as a
+    backstop if the direct delete fails. A non-positive ``retention_days``
+    disables the sweep.
     """
     if retention_days <= 0:
-        return {"purged": 0}
+        return {"purged": 0, "objects_deleted": 0, "legal_held": 0}
 
     cutoff = (now or utcnow()) - timedelta(days=retention_days)
     evidence = db.execute(
@@ -383,14 +435,30 @@ def purge_expired_evidence(
         )
     ).scalars().all()
 
-    keys = [ev.storage_key for ev in evidence if ev.storage_key]
-    objects_deleted = _delete_objects(storage, keys)
-    idempotency.delete_for_entities(db, [str(ev.id) for ev in evidence])
-
+    eligible: list[Evidence] = []
+    legal_held = 0
     for ev in evidence:
+        if not ev.storage_key:
+            continue
+        if _is_legal_hold(storage, ev.storage_key):
+            legal_held += 1
+            continue
+        eligible.append(ev)
+
+    keys = [ev.storage_key for ev in eligible]
+    for key in keys:
+        _mark_retention_eligible(storage, key)
+    objects_deleted = _delete_objects(storage, keys)
+    idempotency.delete_for_entities(db, [str(ev.id) for ev in eligible])
+
+    for ev in eligible:
         db.delete(ev)
     db.commit()
-    return {"purged": len(evidence), "objects_deleted": objects_deleted}
+    return {
+        "purged": len(eligible),
+        "objects_deleted": objects_deleted,
+        "legal_held": legal_held,
+    }
 
 
 # ---------------------------------------------------------------------------
