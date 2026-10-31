@@ -103,7 +103,7 @@ jobs:
         run: sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Repository hygiene (no keystores/secrets tracked)
         run: scripts/check_repo_hygiene.sh
@@ -147,7 +147,7 @@ jobs:
         run: sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Resolve release runtime dependencies
         run: |
@@ -228,7 +228,7 @@ jobs:
           echo "$build_tools" >> "$GITHUB_PATH"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Download SBOM & license report
         uses: actions/download-artifact@v4
