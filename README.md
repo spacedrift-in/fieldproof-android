@@ -204,9 +204,10 @@ FIELD_PROOF_UPLOAD_KEY_PASSWORD=... \
   ./gradlew :app:bundleRelease -Pfieldproof.requireSigning=true
 ```
 
-CI produces signed, versioned AAB/APK artifacts plus an SBOM, license report and
-build provenance. Keystores are never committed (fetched from AWS Secrets Manager
-via GitHub OIDC at build time). See
+A separate release workflow is configured to produce signed AAB/APK artifacts,
+an SBOM, a license report and build provenance when its required signing and
+cloud configuration is provisioned. For this synthetic-data demo, use the debug
+build and the local backend; a signed release is not required. See
 [the release guide](fieldproof-starter/docs/release.md) for signing setup, the
 full pipeline, and the Google Play release/rollback procedure.
 
@@ -265,8 +266,9 @@ pip install -r backend/requirements.txt
 uvicorn app.main:app --app-dir backend --reload
 ```
 
-The Android client points at `http://127.0.0.1:8000/`
-(`app/src/main/java/com/spacedrift/fieldproof/di/NetworkModule.kt`); use
+The debug client defaults to `http://127.0.0.1:8000/` via
+`BuildConfig.API_BASE_URL` (configurable through `FIELD_PROOF_API_BASE_URL` or
+the `fieldproof.apiBaseUrl` Gradle property); use
 `adb reverse tcp:8000 tcp:8000` on a device/emulator. The full API contract —
 including idempotent evidence upload and optimistic concurrency — is in
 [`fieldproof-starter/docs/api-contract.md`](fieldproof-starter/docs/api-contract.md).
