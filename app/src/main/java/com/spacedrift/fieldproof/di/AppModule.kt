@@ -37,7 +37,13 @@ object AppModule {
             context,
             FieldProofDatabase::class.java,
             "fieldproof.db"
-        ).build()
+        )
+            .addMigrations(
+                FieldProofDatabase.MIGRATION_1_2,
+                FieldProofDatabase.MIGRATION_2_3,
+                FieldProofDatabase.MIGRATION_3_4
+            )
+            .build()
     }
 
     @Provides

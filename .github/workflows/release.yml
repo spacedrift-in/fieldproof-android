@@ -1,0 +1,326 @@
+name: Release
+
+# Protected, gated release pipeline for the Android app.
+#
+#   tag v1.4.0            -> build a signed, versioned AAB/APK from the tag
+#   workflow_dispatch     -> build from an explicit version
+#
+# Every job must pass before a signed artifact is produced:
+#   metadata  -> derive versionName/versionCode
+#   verify    -> repo hygiene + unit tests + lint
+#   security  -> license policy scan + CycloneDX SBOM + vulnerability scan
+#   release   -> fetch the upload keystore (AWS KMS/Secrets Manager via OIDC),
+#                build + sign, verify the signature, archive mapping files,
+#                attest provenance and publish a GitHub Release
+#
+# The signing secrets live in a protected GitHub *environment* named `release`
+# (required reviewers). See fieldproof-starter/docs/release.md for provisioning.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Release version, MAJOR.MINOR.PATCH (e.g. 1.4.0)'
+        required: true
+        type: string
+      version_code:
+        description: 'Monotonic versionCode (integer). Auto-derived from the version if blank.'
+        required: false
+        type: string
+        default: ''
+      publish_github_release:
+        description: 'Publish a GitHub Release with the signed artifacts'
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
+    steps:
+      - name: Derive version
+        id: version
+        shell: bash
+        env:
+          INPUT_NAME: ${{ github.event.inputs.version_name }}
+          INPUT_CODE: ${{ github.event.inputs.version_code }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            name="${GITHUB_REF_NAME#v}"
+          else
+            name="${INPUT_NAME}"
+          fi
+          if [[ ! "$name" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version '$name' (expected MAJOR.MINOR.PATCH)"; exit 1
+          fi
+          if [[ -n "${INPUT_CODE}" ]]; then
+            code="${INPUT_CODE}"
+          else
+            IFS='.' read -r maj min pat <<< "$name"
+            code=$((10#$maj * 10000 + 10#$min * 100 + 10#$pat))
+          fi
+          if [[ ! "$code" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid versionCode '$code'"; exit 1
+          fi
+          echo "version_name=$name" >> "$GITHUB_OUTPUT"
+          echo "version_code=$code" >> "$GITHUB_OUTPUT"
+          echo "Resolved $name ($code)"
+
+  verify:
+    name: Verify (hygiene, tests, lint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install required SDK packages
+        run: sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Repository hygiene (no keystores/secrets tracked)
+        run: scripts/check_repo_hygiene.sh
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Android lint (release)
+        run: ./gradlew :app:lintRelease --no-daemon
+
+      - name: Upload test & lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-verify-reports
+          path: |
+            app/build/reports/tests/
+            app/build/reports/lint-results-release.*
+          if-no-files-found: ignore
+
+  security:
+    name: Security gate (SBOM, license, vulnerability)
+    runs-on: ubuntu-latest
+    needs: [metadata]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install required SDK packages
+        run: sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve release runtime dependencies
+        run: |
+          mkdir -p app/build/reports/dependencies
+          ./gradlew :app:dependencies \
+            --configuration releaseRuntimeClasspath \
+            --console=plain --no-daemon \
+            > app/build/reports/dependencies/release-runtime.txt
+          wc -l app/build/reports/dependencies/release-runtime.txt
+
+      - name: License policy scan
+        run: |
+          python3 scripts/license_scan.py \
+            --gradle-report app/build/reports/dependencies/release-runtime.txt \
+            --policy scripts/license-policy.json \
+            --output app/build/reports/dependencies/license-report.json
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          python3 scripts/generate_sbom.py \
+            --gradle-report app/build/reports/dependencies/release-runtime.txt \
+            --output app/build/reports/dependencies/sbom.json \
+            --project-name FieldProof \
+            --project-version "${{ needs.metadata.outputs.version_name }}"
+
+      - name: Dependency vulnerability scan (Grype over the SBOM)
+        uses: anchore/scan-action@v7
+        with:
+          sbom: app/build/reports/dependencies/sbom.json
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: app/build/reports/dependencies/grype-report.json
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-security-reports
+          path: app/build/reports/dependencies/
+          if-no-files-found: ignore
+
+  release:
+    name: Build, sign & publish
+    runs-on: ubuntu-latest
+    needs: [metadata, verify, security]
+    # Protected environment: required reviewers + environment-scoped secrets.
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION_NAME: ${{ needs.metadata.outputs.version_name }}
+      VERSION_CODE: ${{ needs.metadata.outputs.version_code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install required SDK packages
+        run: sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
+
+      - name: Make apksigner available
+        run: |
+          build_tools="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)"
+          echo "APKSIGNER=$build_tools/apksigner" >> "$GITHUB_ENV"
+          echo "$build_tools" >> "$GITHUB_PATH"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Download SBOM & license report
+        uses: actions/download-artifact@v4
+        with:
+          name: release-security-reports
+          path: app/build/reports/dependencies
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-session-name: fieldproof-release-${{ github.run_id }}
+
+      - name: Fetch upload keystore from AWS Secrets Manager
+        id: keystore
+        env:
+          UPLOAD_KEYSTORE_SECRET_ID: ${{ secrets.UPLOAD_KEYSTORE_SECRET_ID }}
+        run: |
+          out="$RUNNER_TEMP/upload-keystore.jks"
+          path="$(UPLOAD_KEYSTORE_OUT="$out" scripts/fetch_upload_keystore.sh)"
+          echo "keystore_path=$path" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed AAB + APK
+        env:
+          FIELD_PROOF_UPLOAD_KEYSTORE_PATH: ${{ steps.keystore.outputs.keystore_path }}
+          FIELD_PROOF_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          FIELD_PROOF_UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          FIELD_PROOF_UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+          FIELD_PROOF_VERSION_NAME: ${{ needs.metadata.outputs.version_name }}
+          FIELD_PROOF_VERSION_CODE: ${{ needs.metadata.outputs.version_code }}
+        run: |
+          ./gradlew :app:bundleRelease :app:assembleRelease \
+            -Pfieldproof.requireSigning=true --no-daemon
+
+      - name: Verify release signatures
+        env:
+          EXPECTED_FINGERPRINT: ${{ secrets.UPLOAD_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          aab="app/build/outputs/bundle/release/app-release.aab"
+          apk="app/build/outputs/apk/release/app-release.apk"
+          if [[ -n "${EXPECTED_FINGERPRINT}" ]]; then
+            scripts/verify_signature.sh "$aab" --expect-sha256 "$EXPECTED_FINGERPRINT"
+            scripts/verify_signature.sh "$apk" --expect-sha256 "$EXPECTED_FINGERPRINT"
+          else
+            scripts/verify_signature.sh "$aab"
+            scripts/verify_signature.sh "$apk"
+          fi
+
+      - name: Collect release artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts/mapping
+          base="fieldproof-${VERSION_NAME}-${VERSION_CODE}"
+          cp app/build/outputs/bundle/release/app-release.aab "release-artifacts/${base}.aab"
+          cp app/build/outputs/apk/release/app-release.apk "release-artifacts/${base}.apk"
+          # Deobfuscation files required to read Play crash reports.
+          for f in mapping.txt configuration.txt seeds.txt usage.txt resources.txt; do
+            [ -f "app/build/outputs/mapping/release/$f" ] && \
+              cp "app/build/outputs/mapping/release/$f" "release-artifacts/mapping/$f"
+          done
+          # Ship the SBOM + license report alongside the binaries.
+          cp app/build/reports/dependencies/sbom.json release-artifacts/ 2>/dev/null || true
+          cp app/build/reports/dependencies/license-report.json release-artifacts/ 2>/dev/null || true
+          ( cd release-artifacts && \
+            find . -maxdepth 1 -type f ! -name checksums.txt -print0 \
+              | sort -z | xargs -0 sha256sum > checksums.txt )
+          cat release-artifacts/checksums.txt
+          ls -lR release-artifacts
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            release-artifacts/*.aab
+            release-artifacts/*.apk
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fieldproof-release-${{ env.VERSION_NAME }}-${{ env.VERSION_CODE }}
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push' || inputs.publish_github_release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ env.VERSION_NAME }}
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('v{0}', env.VERSION_NAME) }}
+          files: release-artifacts/**
+          generate_release_notes: true
+          fail_on_unmatched_files: true

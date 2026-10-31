@@ -1,9 +1,12 @@
 package com.spacedrift.fieldproof
 
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeRequest
 import com.spacedrift.fieldproof.data.remote.CreateInspectionRequest
 import com.spacedrift.fieldproof.data.remote.CreateInspectionResponse
 import com.spacedrift.fieldproof.data.remote.HealthResponse
 import com.spacedrift.fieldproof.data.remote.FieldProofApi
+import com.spacedrift.fieldproof.data.remote.RemoteChecklistItem
+import com.spacedrift.fieldproof.data.remote.RemoteChecklistOutcomeResponse
 import com.spacedrift.fieldproof.data.remote.RemoteInspection
 import com.spacedrift.fieldproof.data.remote.RemoteReport
 import com.spacedrift.fieldproof.data.remote.RemoteReviewResponse
@@ -43,10 +46,13 @@ class FakeFieldProofApi : FieldProofApi {
         )
     }
 
+    var createException: Exception? = null
+
     override suspend fun createInspection(
         request: CreateInspectionRequest,
         idempotencyKey: String
     ): CreateInspectionResponse {
+        createException?.let { throw it }
         return CreateInspectionResponse(
             id = request.id,
             status = "DRAFT"
@@ -85,6 +91,34 @@ class FakeFieldProofApi : FieldProofApi {
             id = idempotencyKey,
             status = "SYNCED"
         )
+    }
+
+    var checklistOutcomeException: Exception? = null
+    var checklistOutcomeRequest: ChecklistOutcomeRequest? = null
+    var checklistOutcomeResponse: RemoteChecklistOutcomeResponse? = null
+
+    override suspend fun updateChecklistOutcome(
+        inspectionId: String,
+        checklistItemId: String,
+        request: ChecklistOutcomeRequest
+    ): RemoteChecklistOutcomeResponse {
+        checklistOutcomeRequest = request
+        checklistOutcomeException?.let { throw it }
+        return checklistOutcomeResponse
+            ?: RemoteChecklistOutcomeResponse(
+                inspection_id = inspectionId,
+                inspection_version = 2,
+                item = RemoteChecklistItem(
+                    id = checklistItemId,
+                    label = "item",
+                    required = true,
+                    evidence_requirement = "photo",
+                    status = request.status,
+                    note = request.note,
+                    sort_order = 0,
+                    version = (request.expected_version ?: 0) + 1
+                )
+            )
     }
 
     override suspend fun submitInspection(
@@ -171,8 +205,10 @@ fun readPartValues(parts: List<MultipartBody.Part>): List<Pair<String, String>> 
     }
 }
 
-fun httpException(code: Int): HttpException {
-    val jsonBody = """{"detail":"error"}"""
+fun httpException(
+    code: Int,
+    jsonBody: String = """{"detail":"error"}"""
+): HttpException {
     val body = jsonBody.toResponseBody("application/json".toMediaType())
     val response = Response.error<UploadEvidenceResponse>(code, body)
     return HttpException(response)

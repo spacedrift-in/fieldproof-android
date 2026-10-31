@@ -31,6 +31,32 @@ interface EvidenceDao {
     ): Flow<List<EvidenceEntity>>
 
     @Query(
+        "SELECT * FROM evidence " +
+                "WHERE inspectionId = :inspectionId " +
+                "ORDER BY capturedAt DESC"
+    )
+    suspend fun getForInspection(
+        inspectionId: String
+    ): List<EvidenceEntity>
+
+    @Query(
+        "SELECT * FROM evidence " +
+                "WHERE syncStatus = 'SYNCED' " +
+                "AND capturedAt < :capturedBefore " +
+                "AND localUri IS NOT NULL"
+    )
+    suspend fun getSyncedCapturedBefore(
+        capturedBefore: Long
+    ): List<EvidenceEntity>
+
+    @Query(
+        "UPDATE evidence SET localUri = NULL WHERE id = :evidenceId"
+    )
+    suspend fun clearLocalUri(
+        evidenceId: String
+    )
+
+    @Query(
         "UPDATE evidence " +
                 "SET syncStatus = :status " +
                 "WHERE id = :evidenceId"
@@ -47,4 +73,15 @@ interface EvidenceDao {
     suspend fun deleteForInspection(
         inspectionId: String
     )
+
+    @Query(
+        "DELETE FROM evidence " +
+                "WHERE id = :evidenceId"
+    )
+    suspend fun deleteEvidence(
+        evidenceId: String
+    )
+
+    @Query("DELETE FROM evidence")
+    suspend fun deleteAll()
 }

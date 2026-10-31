@@ -7,8 +7,10 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -203,6 +205,46 @@ class RoomPersistenceTest {
     }
 
     @Test
+    fun `evidence is linked to its checklist item and keeps its note`() = runBlocking {
+        db.inspectionDao().insertInspection(inspection())
+        db.checklistItemDao().insertChecklistItems(
+            listOf(checklistItem("c1"), checklistItem("c2"))
+        )
+        db.evidenceDao().insertEvidence(
+            EvidenceEntity(
+                id = "e1",
+                inspectionId = "i1",
+                checklistItemId = "c1",
+                type = "PHOTO",
+                localUri = "file:///photo-e1.jpg",
+                note = "Cracked panel near bay 3",
+                capturedAt = 2_000L,
+                syncStatus = "QUEUED"
+            )
+        )
+
+        val linked = db.evidenceDao().observeEvidence("i1").first().single()
+
+        assertEquals("c1", linked.checklistItemId)
+        assertEquals("Cracked panel near bay 3", linked.note)
+        assertEquals(
+            "i1",
+            db.checklistItemDao().observeChecklistItems("i1").first()
+                .first { it.id == "c1" }
+                .inspectionId
+        )
+    }
+
+    @Test
+    fun `observeInspection emits null for a missing row and the row when present`() = runBlocking {
+        assertNull(db.inspectionDao().observeInspection("missing").first())
+
+        db.inspectionDao().insertInspection(inspection(id = "i1", title = "Found"))
+
+        assertEquals("Found", db.inspectionDao().observeInspection("i1").first()!!.title)
+    }
+
+    @Test
     fun `deleteForInspection removes only that inspection's children`() = runBlocking {
         db.inspectionDao().insertInspection(inspection(id = "i1"))
         db.inspectionDao().insertInspection(inspection(id = "i2"))
@@ -281,5 +323,109 @@ class RoomPersistenceTest {
         assertEquals("failed", requeued.id)
         assertEquals(0, requeued.attempts)
         assertNull(requeued.lastError)
+    }
+
+    // ---------------------------------------------------------------------
+    // Checklist outcome compare-and-set acknowledgement
+    // ---------------------------------------------------------------------
+
+    private fun checklistOperation(
+        operationId: String,
+        itemId: String,
+        status: String = "UPLOADING",
+        revision: Long = 0L
+    ) = SyncOperationEntity(
+        id = operationId,
+        entityId = itemId,
+        entityType = "CHECKLIST",
+        operationType = "UPDATE",
+        status = status,
+        attempts = 0,
+        lastError = null,
+        createdAt = 1_000L,
+        updatedAt = 1_000L,
+        revision = revision
+    )
+
+    @Test
+    fun `applyOutcome bumps the local revision and persists the outcome`() = runBlocking {
+        db.checklistItemDao().insertChecklistItem(checklistItem("c1"))
+
+        val revision = db.checklistItemDao().applyOutcome(
+            itemId = "c1",
+            outcome = "PASS",
+            note = "ok",
+            completed = true,
+            syncState = "QUEUED"
+        )
+
+        val item = db.checklistItemDao().getChecklistItem("c1")!!
+        assertEquals(1L, revision)
+        assertEquals(1L, item.localRevision)
+        assertEquals("PASS", item.outcome)
+        assertEquals("QUEUED", item.syncState)
+    }
+
+    @Test
+    fun `acknowledgeSyncedOutcome marks item and operation synced at the matching revision`() =
+        runBlocking {
+            db.checklistItemDao().insertChecklistItem(checklistItem("c1"))
+            val revision = db.checklistItemDao().applyOutcome(
+                itemId = "c1",
+                outcome = "PASS",
+                note = null,
+                completed = true,
+                syncState = "QUEUED"
+            )
+            db.syncOperationDao().insert(
+                checklistOperation("checklist:c1", "c1", revision = revision)
+            )
+
+            val acknowledged = db.checklistItemDao().acknowledgeSyncedOutcome(
+                itemId = "c1",
+                operationId = "checklist:c1",
+                revision = revision,
+                syncedVersion = 7,
+                attempts = 1,
+                now = 2_000L
+            )
+
+            assertTrue(acknowledged)
+            val item = db.checklistItemDao().getChecklistItem("c1")!!
+            assertEquals("SYNCED", item.syncState)
+            assertEquals(7, item.syncedVersion)
+            assertEquals(
+                "SYNCED",
+                db.syncOperationDao().observeOperations().first().single().status
+            )
+        }
+
+    @Test
+    fun `acknowledgeSyncedOutcome is a no-op once a newer local revision exists`() = runBlocking {
+        db.checklistItemDao().insertChecklistItem(checklistItem("c1"))
+        db.checklistItemDao().applyOutcome("c1", "PASS", null, true, "QUEUED")
+        val newerRevision = db.checklistItemDao().applyOutcome("c1", "FAIL", null, true, "QUEUED")
+        db.syncOperationDao().insert(
+            checklistOperation("checklist:c1", "c1", status = "QUEUED", revision = newerRevision)
+        )
+
+        // A stale upload for the previous revision must not acknowledge.
+        val acknowledged = db.checklistItemDao().acknowledgeSyncedOutcome(
+            itemId = "c1",
+            operationId = "checklist:c1",
+            revision = newerRevision - 1,
+            syncedVersion = 3,
+            attempts = 1,
+            now = 2_000L
+        )
+
+        assertFalse(acknowledged)
+        val item = db.checklistItemDao().getChecklistItem("c1")!!
+        assertEquals("QUEUED", item.syncState)
+        assertNull(item.syncedVersion)
+        assertEquals(
+            "QUEUED",
+            db.syncOperationDao().observeOperations().first().single().status
+        )
     }
 }

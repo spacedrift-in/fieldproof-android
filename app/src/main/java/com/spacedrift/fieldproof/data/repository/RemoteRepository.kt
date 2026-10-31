@@ -1,7 +1,11 @@
 package com.spacedrift.fieldproof.data.repository
 
+import com.spacedrift.fieldproof.data.local.ChecklistItemEntity
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionEntity
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeRequest
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploadResult
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploader
 import com.spacedrift.fieldproof.data.remote.CreateInspectionRequest
 import com.spacedrift.fieldproof.data.remote.EvidenceFileReader
 import com.spacedrift.fieldproof.data.remote.EvidencePartsResult
@@ -20,6 +24,8 @@ import com.spacedrift.fieldproof.data.remote.RemoteSubmitResponse
 import com.spacedrift.fieldproof.data.remote.ReviewInspectionRequest
 import com.spacedrift.fieldproof.data.remote.SubmitInspectionRequest
 import com.spacedrift.fieldproof.data.remote.WorkflowResult
+import com.spacedrift.fieldproof.domain.conflict.ServerConflict
+import com.spacedrift.fieldproof.domain.conflict.ServerConflictParser
 import kotlinx.coroutines.CancellationException
 import retrofit2.HttpException
 import java.io.IOException
@@ -28,7 +34,7 @@ import javax.inject.Inject
 class RemoteRepository @Inject constructor(
     private val api: FieldProofApi,
     private val fileReader: EvidenceFileReader
-) : EvidenceUploader, InspectionUploader, InspectionWorkflowClient {
+) : EvidenceUploader, InspectionUploader, InspectionWorkflowClient, ChecklistOutcomeUploader {
 
     suspend fun health(): HealthResponse {
         return api.health()
@@ -67,7 +73,9 @@ class RemoteRepository @Inject constructor(
             throw exception
         } catch (exception: HttpException) {
             when {
-                exception.code() == 409 -> InspectionUploadResult.Conflict
+                exception.code() == 409 -> InspectionUploadResult.Conflict(
+                    serverConflict = parseConflict(exception)
+                )
 
                 exception.code() >= 500 -> InspectionUploadResult.Failed(
                     retryable = true,
@@ -121,6 +129,55 @@ class RemoteRepository @Inject constructor(
                     idempotencyKey = idempotencyKey
                 )
             }
+        }
+    }
+
+    override suspend fun uploadChecklistOutcome(
+        item: ChecklistItemEntity,
+        idempotencyKey: String
+    ): ChecklistOutcomeUploadResult {
+        return try {
+            val response = api.updateChecklistOutcome(
+                inspectionId = item.inspectionId,
+                checklistItemId = item.id,
+                request = ChecklistOutcomeRequest(
+                    status = item.outcome,
+                    note = item.note,
+                    expected_version = item.syncedVersion
+                )
+            )
+            ChecklistOutcomeUploadResult.Success(
+                itemVersion = response.item.version,
+                inspectionVersion = response.inspection_version
+            )
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: HttpException) {
+            when {
+                exception.code() == 409 -> ChecklistOutcomeUploadResult.Conflict(
+                    serverConflict = parseConflict(exception)
+                )
+
+                exception.code() >= 500 -> ChecklistOutcomeUploadResult.Failed(
+                    retryable = true,
+                    message = "Server error (${exception.code()}): ${exception.message()}"
+                )
+
+                else -> ChecklistOutcomeUploadResult.Failed(
+                    retryable = false,
+                    message = "Outcome rejected (${exception.code()}): ${exception.message()}"
+                )
+            }
+        } catch (exception: IOException) {
+            ChecklistOutcomeUploadResult.Failed(
+                retryable = true,
+                message = "Network error: ${exception.message ?: "unreachable"}"
+            )
+        } catch (exception: Exception) {
+            ChecklistOutcomeUploadResult.Failed(
+                retryable = false,
+                message = exception.message ?: "Unknown outcome error"
+            )
         }
     }
 
@@ -190,7 +247,7 @@ class RemoteRepository @Inject constructor(
         } catch (exception: HttpException) {
             when {
                 exception.code() == 409 -> WorkflowResult.Conflict(
-                    message = httpMessage(exception)
+                    serverConflict = parseConflict(exception)
                 )
 
                 exception.code() >= 500 -> WorkflowResult.Failed(
@@ -220,6 +277,17 @@ class RemoteRepository @Inject constructor(
         return "Request failed (${exception.code()}): ${exception.message()}"
     }
 
+    /**
+     * Reads and maps the body of a 409 response. The error body can only be
+     * consumed once, so it is read here immediately and handed to the parser.
+     */
+    private fun parseConflict(exception: HttpException): ServerConflict {
+        val body = runCatching {
+            exception.response()?.errorBody()?.string()
+        }.getOrNull()
+        return ServerConflictParser.parse(body)
+    }
+
     private suspend fun upload(
         evidence: EvidenceEntity,
         parts: List<okhttp3.MultipartBody.Part>,
@@ -236,7 +304,9 @@ class RemoteRepository @Inject constructor(
             throw exception
         } catch (exception: HttpException) {
             when {
-                exception.code() == 409 -> EvidenceUploadResult.Conflict
+                exception.code() == 409 -> EvidenceUploadResult.Conflict(
+                    serverConflict = parseConflict(exception)
+                )
 
                 exception.code() >= 500 -> EvidenceUploadResult.Failed(
                     retryable = true,

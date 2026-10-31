@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import domain
+from . import domain, idempotency
 from .demo_data import DEMO_TEMPLATE, DEMO_TEMPLATE_ID
 from .models import ChecklistItem, Evidence, Inspection, Review, utcnow
+from .observability import metrics
 from .schemas import (
+    ChecklistItemOut,
+    ChecklistOutcomeUpdate,
     CreateInspectionRequest,
     ReportChecklistItem,
     ReportResponse,
@@ -20,6 +25,8 @@ from .schemas import (
     ReviewRequest,
 )
 from .storage import EvidenceStorage
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +55,15 @@ def version_conflict(inspection: Inspection) -> HTTPException:
 # Inspections
 # ---------------------------------------------------------------------------
 
-def create_inspection(db: Session, payload: CreateInspectionRequest) -> Inspection:
+def create_inspection(
+    db: Session,
+    payload: CreateInspectionRequest,
+    tenant_id: str = "demo",
+) -> Inspection:
     template_id = payload.template_id or uuid.UUID(DEMO_TEMPLATE_ID)
     inspection = Inspection(
         id=payload.id,
+        tenant_id=tenant_id,
         title=payload.title,
         location=payload.location,
         status=domain.InspectionStatus.DRAFT,
@@ -83,11 +95,97 @@ def create_inspection(db: Session, payload: CreateInspectionRequest) -> Inspecti
     return inspection
 
 
-def get_inspection(db: Session, inspection_id: uuid.UUID) -> Inspection:
+def _load_inspection(db: Session, inspection_id: uuid.UUID, tenant_id: str | None) -> Inspection:
     inspection = db.get(Inspection, inspection_id)
-    if inspection is None:
+    if inspection is None or (tenant_id is not None and inspection.tenant_id != tenant_id):
+        # A cross-tenant id is surfaced as 404 so tenant existence is not leaked.
         raise not_found()
     return inspection
+
+
+def get_inspection(
+    db: Session,
+    inspection_id: uuid.UUID,
+    tenant_id: str | None = None,
+) -> Inspection:
+    return _load_inspection(db, inspection_id, tenant_id)
+
+
+# ---------------------------------------------------------------------------
+# Checklist outcomes
+# ---------------------------------------------------------------------------
+
+def update_checklist_outcome(
+    db: Session,
+    inspection_id: uuid.UUID,
+    checklist_item_id: uuid.UUID,
+    payload: ChecklistOutcomeUpdate,
+    tenant_id: str | None = None,
+) -> tuple[Inspection, ChecklistItem]:
+    """Set a checklist item's outcome/note with optimistic concurrency.
+
+    Replay semantics (lost-response safe): if the item already holds exactly the
+    requested status/note, the request is treated as a replay of an already
+    committed mutation, regardless of ``expected_version``, and returns the
+    current item **without** bumping any version. This distinguishes the same
+    committed operation from a conflicting later edit: a stale
+    ``expected_version`` only raises 409 when the server state no longer matches
+    the request (i.e. someone else changed it to something different).
+    """
+    inspection = _load_inspection(db, inspection_id, tenant_id)
+
+    item = db.get(ChecklistItem, checklist_item_id)
+    if item is None or item.inspection_id != inspection.id:
+        raise HTTPException(
+            status_code=404,
+            detail="Checklist item not found for this inspection.",
+        )
+
+    if inspection.status not in domain.InspectionStatus.CHECKLIST_EDITABLE:
+        raise conflict(
+            f"Cannot change checklist outcomes while the inspection is {inspection.status}."
+        )
+
+    if payload.status not in domain.ChecklistItemStatus.ALL:
+        raise HTTPException(
+            status_code=422,
+            detail=f"status must be one of {sorted(domain.ChecklistItemStatus.ALL)}",
+        )
+
+    normalized_note = payload.note.strip() if (payload.note and payload.note.strip()) else None
+
+    # Replay check must come *before* the version check. A retry of an update
+    # whose response was lost carries the pre-mutation ``expected_version``; the
+    # server already applied it, so the item matches the request exactly and we
+    # confirm the replay without bumping any version. Checking the version first
+    # turned that legitimate retry into a false 409 (KL-033). A genuine conflict
+    # (the item was since changed to something else) still fails the version
+    # check below.
+    if item.status == payload.status and (item.note or None) == normalized_note:
+        return inspection, item
+
+    if (
+        payload.expected_version is not None
+        and payload.expected_version != item.version
+    ):
+        raise conflict(
+            {
+                "message": "Version conflict: the checklist item changed on the server.",
+                "current_version": item.version,
+                "current_status": item.status,
+                "checklist_item_id": str(item.id),
+            }
+        )
+
+    item.status = payload.status
+    item.note = normalized_note
+    item.version += 1
+    inspection.version += 1
+    inspection.updated_at = utcnow()
+    db.commit()
+    db.refresh(item)
+    db.refresh(inspection)
+    return inspection, item
 
 
 # ---------------------------------------------------------------------------
@@ -107,10 +205,9 @@ def upload_evidence(
     content_type: str | None,
     filename: str | None,
     storage: EvidenceStorage,
+    tenant_id: str = "demo",
 ) -> Evidence:
-    inspection = db.get(Inspection, inspection_id)
-    if inspection is None:
-        raise not_found()
+    inspection = _load_inspection(db, inspection_id, tenant_id)
 
     if inspection.status not in domain.InspectionStatus.EVIDENCE_EDITABLE:
         raise conflict(
@@ -149,11 +246,15 @@ def upload_evidence(
             return existing
         raise conflict("Evidence id already exists with different content")
 
-    storage_key = f"evidence/{inspection.id}/{evidence_uuid}{_extension(filename, content_type, kind)}"
-    storage.save(storage_key, content or b"")
+    storage_key = (
+        f"tenants/{tenant_id}/inspections/{inspection.id}/evidence/"
+        f"{evidence_uuid}{_extension(filename, content_type, kind)}"
+    )
+    storage.save(storage_key, content or b"", content_type=content_type if kind == domain.EvidenceKind.PHOTO else None)
 
     evidence = Evidence(
         id=evidence_uuid,
+        tenant_id=tenant_id,
         inspection_id=inspection.id,
         checklist_item_id=checklist_item_id,
         kind=kind,
@@ -171,7 +272,193 @@ def upload_evidence(
     inspection.updated_at = utcnow()
     db.commit()
     db.refresh(evidence)
+    metrics.inc("evidence_uploads_total", {"kind": kind})
     return evidence
+
+
+def get_evidence(
+    db: Session,
+    inspection_id: uuid.UUID,
+    evidence_id: uuid.UUID,
+    tenant_id: str | None = None,
+) -> Evidence:
+    inspection = _load_inspection(db, inspection_id, tenant_id)
+    evidence = db.get(Evidence, evidence_id)
+    if evidence is None or evidence.inspection_id != inspection.id:
+        raise not_found("Evidence not found")
+    if tenant_id is not None and evidence.tenant_id != tenant_id:
+        raise not_found("Evidence not found")
+    return evidence
+
+
+# ---------------------------------------------------------------------------
+# Deletion / retention
+# ---------------------------------------------------------------------------
+
+def _delete_objects(storage: EvidenceStorage, keys: list[str]) -> int:
+    """Best-effort delete of stored objects; failures are logged, not fatal."""
+    deleted = 0
+    for key in keys:
+        try:
+            storage.delete(key)
+            deleted += 1
+        except Exception:  # noqa: BLE001
+            metrics.inc("storage_failures_total", {"operation": "delete"})
+            logger.warning("Failed to delete evidence object %s", key, exc_info=True)
+    return deleted
+
+
+def _is_legal_hold(storage: EvidenceStorage, key: str) -> bool:
+    """Return True when an object is under legal hold.
+
+    Object stores that do not support tags (the local dev backend) are never
+    held. A failure to *check* is treated as held (fail safe) so a transient
+    object-store error cannot cause an object under litigation hold to be
+    purged.
+    """
+    checker = getattr(storage, "is_legal_hold", None)
+    if checker is None:
+        return False
+    try:
+        return bool(checker(key))
+    except Exception:  # noqa: BLE001
+        logger.warning("Legal-hold check failed for %s; treating as held", key, exc_info=True)
+        return True
+
+
+def _mark_retention_eligible(storage: EvidenceStorage, key: str) -> None:
+    """Tag an object so the S3 lifecycle rule may expire it later.
+
+    This is the coordination point between the database and object storage: the
+    sweep decides eligibility (APPROVED + past retention) and only then tags the
+    object. Stores without tag support ignore this.
+    """
+    marker = getattr(storage, "mark_retention_eligible", None)
+    if marker is None:
+        return
+    try:
+        marker(key)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to tag %s eligible for lifecycle expiry", key, exc_info=True)
+
+
+def delete_inspection(
+    db: Session,
+    inspection_id: uuid.UUID,
+    *,
+    tenant_id: str | None = None,
+    storage: EvidenceStorage,
+) -> dict:
+    """Delete an inspection and everything under it.
+
+    Stored evidence objects are removed before the database rows so an
+    interrupted delete cannot leave orphaned, undeletable objects behind. The
+    tenant check uses the same 404-not-403 rule as reads so tenant existence is
+    never leaked.
+    """
+    inspection = _load_inspection(db, inspection_id, tenant_id)
+
+    evidence = list(inspection.evidence)
+    checklist = list(inspection.checklist_items)
+    keys = [ev.storage_key for ev in evidence if ev.storage_key]
+    objects_deleted = _delete_objects(storage, keys)
+
+    entity_ids = [str(inspection.id), *[str(ev.id) for ev in evidence], *[str(c.id) for c in checklist]]
+    idempotency.delete_for_entities(db, entity_ids)
+
+    db.delete(inspection)
+    db.commit()
+    return {
+        "inspection_id": str(inspection_id),
+        "evidence_deleted": len(evidence),
+        "objects_deleted": objects_deleted,
+    }
+
+
+def delete_tenant_data(
+    db: Session,
+    tenant_id: str,
+    *,
+    storage: EvidenceStorage,
+) -> dict:
+    """Delete every inspection and evidence object for a tenant."""
+    evidence = db.execute(
+        select(Evidence).where(Evidence.tenant_id == tenant_id)
+    ).scalars().all()
+    inspections = db.execute(
+        select(Inspection).where(Inspection.tenant_id == tenant_id)
+    ).scalars().all()
+
+    keys = [ev.storage_key for ev in evidence if ev.storage_key]
+    objects_deleted = _delete_objects(storage, keys)
+
+    entity_ids = [str(i.id) for i in inspections] + [str(ev.id) for ev in evidence]
+    idempotency.delete_for_entities(db, entity_ids)
+
+    for inspection in inspections:
+        db.delete(inspection)
+    db.commit()
+    return {
+        "tenant_id": tenant_id,
+        "inspections_deleted": len(inspections),
+        "evidence_deleted": len(evidence),
+        "objects_deleted": objects_deleted,
+    }
+
+
+def purge_expired_evidence(
+    db: Session,
+    *,
+    retention_days: int,
+    storage: EvidenceStorage,
+    now: datetime | None = None,
+) -> dict:
+    """Retention sweep: delete evidence uploaded more than ``retention_days`` ago.
+
+    Only evidence attached to a *finalized* (APPROVED) inspection is eligible:
+    active drafts and submitted work are never purged. Objects under legal hold
+    are skipped entirely. Eligible objects are also tagged so the object-store
+    lifecycle rule (which only targets tagged objects) can expire them as a
+    backstop if the direct delete fails. A non-positive ``retention_days``
+    disables the sweep.
+    """
+    if retention_days <= 0:
+        return {"purged": 0, "objects_deleted": 0, "legal_held": 0}
+
+    cutoff = (now or utcnow()) - timedelta(days=retention_days)
+    evidence = db.execute(
+        select(Evidence)
+        .join(Inspection, Evidence.inspection_id == Inspection.id)
+        .where(
+            Evidence.uploaded_at < cutoff,
+            Inspection.status == domain.InspectionStatus.APPROVED,
+        )
+    ).scalars().all()
+
+    eligible: list[Evidence] = []
+    legal_held = 0
+    for ev in evidence:
+        if not ev.storage_key:
+            continue
+        if _is_legal_hold(storage, ev.storage_key):
+            legal_held += 1
+            continue
+        eligible.append(ev)
+
+    keys = [ev.storage_key for ev in eligible]
+    for key in keys:
+        _mark_retention_eligible(storage, key)
+    objects_deleted = _delete_objects(storage, keys)
+    idempotency.delete_for_entities(db, [str(ev.id) for ev in eligible])
+
+    for ev in eligible:
+        db.delete(ev)
+    db.commit()
+    return {
+        "purged": len(eligible),
+        "objects_deleted": objects_deleted,
+        "legal_held": legal_held,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +466,12 @@ def upload_evidence(
 # ---------------------------------------------------------------------------
 
 def submit_inspection(
-    db: Session, inspection_id: uuid.UUID, expected_version: int | None
+    db: Session,
+    inspection_id: uuid.UUID,
+    expected_version: int | None,
+    tenant_id: str | None = None,
 ) -> Inspection:
-    inspection = db.get(Inspection, inspection_id)
-    if inspection is None:
-        raise not_found()
+    inspection = _load_inspection(db, inspection_id, tenant_id)
 
     if expected_version is not None and expected_version != inspection.version:
         raise version_conflict(inspection)
@@ -193,12 +481,13 @@ def submit_inspection(
             f"Cannot submit an inspection in status {inspection.status}."
         )
 
-    missing = _missing_required_evidence(inspection)
-    if missing:
+    missing, errors = _submit_validation(inspection)
+    if errors:
         raise conflict(
             {
-                "message": "Missing required evidence for submission.",
+                "message": "Submission blocked by validation errors.",
                 "missing_checklist_item_ids": [str(item) for item in missing],
+                "errors": errors,
             }
         )
 
@@ -211,11 +500,12 @@ def submit_inspection(
 
 
 def review_inspection(
-    db: Session, inspection_id: uuid.UUID, payload: ReviewRequest
+    db: Session,
+    inspection_id: uuid.UUID,
+    payload: ReviewRequest,
+    tenant_id: str | None = None,
 ) -> tuple[Inspection, Review]:
-    inspection = db.get(Inspection, inspection_id)
-    if inspection is None:
-        raise not_found()
+    inspection = _load_inspection(db, inspection_id, tenant_id)
 
     if payload.expected_version is not None and payload.expected_version != inspection.version:
         raise version_conflict(inspection)
@@ -252,10 +542,12 @@ def review_inspection(
 # Report
 # ---------------------------------------------------------------------------
 
-def build_report(db: Session, inspection_id: uuid.UUID) -> ReportResponse:
-    inspection = db.get(Inspection, inspection_id)
-    if inspection is None:
-        raise not_found()
+def build_report(
+    db: Session,
+    inspection_id: uuid.UUID,
+    tenant_id: str | None = None,
+) -> ReportResponse:
+    inspection = _load_inspection(db, inspection_id, tenant_id)
 
     if inspection.status != domain.InspectionStatus.APPROVED:
         raise conflict(
@@ -315,24 +607,68 @@ def build_report(db: Session, inspection_id: uuid.UUID) -> ReportResponse:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _missing_required_evidence(inspection: Inspection) -> list[uuid.UUID]:
+def _evidence_satisfied(requirement: str, kinds: set[str]) -> bool:
+    if requirement == domain.EvidenceRequirement.NONE:
+        return True
+    if requirement == domain.EvidenceRequirement.PHOTO:
+        return domain.EvidenceKind.PHOTO in kinds
+    if requirement == domain.EvidenceRequirement.NOTE:
+        return domain.EvidenceKind.NOTE in kinds
+    if requirement == domain.EvidenceRequirement.PHOTO_OR_NOTE:
+        return bool(kinds)
+    return True
+
+
+def _submit_validation(
+    inspection: Inspection,
+) -> tuple[list[uuid.UUID], list[dict]]:
+    """Validate required items before submission.
+
+    Returns the ids of required items missing their evidence plus a list of
+    actionable field errors so the client can point at the exact row/field.
+    Required items must have their required evidence *and* a recorded outcome
+    (``PASS``/``FAIL``/``NOT_APPLICABLE``) before the inspection can be finalized.
+    """
     by_item: dict[uuid.UUID, set[str]] = {}
     for ev in inspection.evidence:
         if ev.checklist_item_id is not None:
             by_item.setdefault(ev.checklist_item_id, set()).add(ev.kind)
 
     missing: list[uuid.UUID] = []
+    errors: list[dict] = []
     for item in inspection.checklist_items:
         if not item.required:
             continue
+
         kinds = by_item.get(item.id, set())
-        req = item.evidence_requirement
-        if req == domain.EvidenceRequirement.PHOTO and domain.EvidenceKind.PHOTO not in kinds:
+        if not _evidence_satisfied(item.evidence_requirement, kinds):
             missing.append(item.id)
-        elif req == domain.EvidenceRequirement.NOTE and domain.EvidenceKind.NOTE not in kinds:
-            missing.append(item.id)
-        elif req == domain.EvidenceRequirement.PHOTO_OR_NOTE and not kinds:
-            missing.append(item.id)
+            requirement = item.evidence_requirement.replace("_or_", " or ")
+            errors.append(
+                {
+                    "field": f"checklist_items.{item.id}.evidence",
+                    "code": "MISSING_REQUIRED_EVIDENCE",
+                    "message": (
+                        f"'{item.label}' requires {requirement} evidence before submission."
+                    ),
+                }
+            )
+
+        if item.status not in domain.ChecklistItemStatus.RESOLVED:
+            errors.append(
+                {
+                    "field": f"checklist_items.{item.id}.status",
+                    "code": "OUTCOME_REQUIRED",
+                    "message": (
+                        f"Set PASS, FAIL or NOT_APPLICABLE for '{item.label}' before submission."
+                    ),
+                }
+            )
+    return missing, errors
+
+
+def _missing_required_evidence(inspection: Inspection) -> list[uuid.UUID]:
+    missing, _ = _submit_validation(inspection)
     return missing
 
 

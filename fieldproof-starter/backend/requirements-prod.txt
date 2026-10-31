@@ -1,0 +1,10 @@
+# Production-only extras. The core application runs without these (it lazily
+# imports them only when the corresponding features are enabled), which keeps
+# local development and CI dependency free.
+#
+#   * boto3  -> EVIDENCE_STORAGE_BACKEND=s3 (private object storage)
+#   * clamd  -> MALWARE_SCANNER=clamav (ClamAV INSTREAM scanning)
+#   * gunicorn -> production process manager (uvicorn workers)
+boto3>=1.34,<2.0
+clamd>=1.0,<2.0
+gunicorn>=22.0,<24.0

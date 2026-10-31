@@ -3,6 +3,7 @@ package com.spacedrift.fieldproof.sync
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.spacedrift.fieldproof.FakeChecklistOutcomeUploader
 import com.spacedrift.fieldproof.FakeEvidenceUploader
 import com.spacedrift.fieldproof.FakeInspectionUploader
 import com.spacedrift.fieldproof.data.local.FieldProofDatabase
@@ -58,13 +59,16 @@ class OfflineToSyncIntegrationTest {
 
     private fun runner(
         inspectionUploader: FakeInspectionUploader = FakeInspectionUploader(),
-        evidenceUploader: FakeEvidenceUploader = FakeEvidenceUploader()
+        evidenceUploader: FakeEvidenceUploader = FakeEvidenceUploader(),
+        checklistUploader: FakeChecklistOutcomeUploader = FakeChecklistOutcomeUploader()
     ) = SyncRunner(
         syncRepository = syncRepository,
         inspectionDao = db.inspectionDao(),
         evidenceDao = db.evidenceDao(),
+        checklistItemDao = db.checklistItemDao(),
         inspectionUploader = inspectionUploader,
-        uploader = evidenceUploader
+        uploader = evidenceUploader,
+        checklistOutcomeUploader = checklistUploader
     )
 
     @Test

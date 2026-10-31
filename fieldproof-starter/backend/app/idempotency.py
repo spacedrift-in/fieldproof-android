@@ -38,6 +38,22 @@ def get_record(db: Session, key: str, scope: str) -> IdempotencyRecord | None:
     return db.execute(stmt).scalar_one_or_none()
 
 
+def delete_for_entities(db: Session, entity_ids: list[str]) -> int:
+    """Delete idempotency records that reference any of ``entity_ids``.
+
+    Called when inspections/evidence are deleted so a replayed request cannot
+    return a stored response for a record that no longer exists.
+    """
+    if not entity_ids:
+        return 0
+    records = db.execute(
+        select(IdempotencyRecord).where(IdempotencyRecord.entity_id.in_(entity_ids))
+    ).scalars().all()
+    for record in records:
+        db.delete(record)
+    return len(records)
+
+
 def store(
     db: Session,
     *,

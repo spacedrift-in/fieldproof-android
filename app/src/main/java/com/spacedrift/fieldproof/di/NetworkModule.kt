@@ -1,5 +1,6 @@
 package com.spacedrift.fieldproof.di
 
+import com.spacedrift.fieldproof.BuildConfig
 import com.spacedrift.fieldproof.data.remote.FieldProofApi
 import dagger.Module
 import dagger.Provides
@@ -15,13 +16,18 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
-    private const val BASE_URL = "http://127.0.0.1:8000/"
-
     @Provides
     @Singleton
     fun provideLoggingInterceptor(): HttpLoggingInterceptor {
         return HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
+            // Never log request/response metadata in release builds: inspection
+            // and evidence URLs are sensitive. Debug builds get method/URL/status
+            // only — never bodies.
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.BASIC
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
         }
     }
 
@@ -41,7 +47,7 @@ object NetworkModule {
         okHttpClient: OkHttpClient
     ): Retrofit {
         return Retrofit.Builder()
-            .baseUrl(BASE_URL)
+            .baseUrl(BuildConfig.API_BASE_URL)
             .client(okHttpClient)
             .addConverterFactory(
                 GsonConverterFactory.create()

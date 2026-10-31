@@ -64,7 +64,39 @@ def get_db() -> Iterator[Session]:
 
 
 def init_db() -> None:
-    """Create tables if they do not exist (demo bootstrap)."""
+    """Create tables if they do not exist (demo bootstrap only).
+
+    Production never calls this: schema is managed by migrations (KL-003). See
+    :func:`run_migrations`.
+    """
     from . import models  # noqa: F401  (registers ORM mappings)
 
     Base.metadata.create_all(bind=get_engine())
+
+
+def run_migrations(revision: str = "head") -> None:
+    """Apply Alembic migrations against ``DATABASE_URL``.
+
+    This is the explicit, production schema path. It is never invoked implicitly
+    at startup; operators/CI run it during deploy. Failures are counted in
+    ``migration_failures_total`` so they can be alerted on.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    from .observability import metrics
+
+    from .config import BACKEND_DIR
+
+    ini_path = BACKEND_DIR / "alembic.ini"
+    cfg = Config(str(ini_path))
+    # Do not let alembic's env.py reconfigure the process logging (fileConfig
+    # would reset root level/handlers). The CLI still configures its own logger.
+    cfg.attributes["configure_logger"] = False
+    try:
+        command.upgrade(cfg, revision)
+    except Exception:
+        metrics.inc("migration_failures_total")
+        raise
+    else:
+        metrics.inc("migrations_applied_total")

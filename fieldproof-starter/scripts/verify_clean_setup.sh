@@ -25,6 +25,14 @@ check() {
   printf '  %-40s %-4s %s\n' "$name" "$ok" "$version"
 }
 
+# Like check(), but never fails the run: used for things the reviewer has not
+# started yet (e.g. the demo API) so a clean machine can still exit 0.
+check_optional() {
+  local name="$1" present="$2" version="$3" ok="no"
+  if [ "$present" = "yes" ]; then ok="yes"; fi
+  printf '  %-40s %-4s %s\n' "$name" "$ok" "$version"
+}
+
 echo "== FieldProof clean-environment verification =="
 echo "(app root: $REPO_ROOT | starter: $STARTER)"
 echo
@@ -78,9 +86,9 @@ echo
 echo "-- optional demo tools --"
 FIELDPROOF_BASE_URL="${FIELDPROOF_BASE_URL:-http://127.0.0.1:8000}"
 if curl -s --max-time 5 "${FIELDPROOF_BASE_URL}/health" >/dev/null 2>&1; then
-  check "API at ${FIELDPROOF_BASE_URL}" yes "reachable"
+  check_optional "API at ${FIELDPROOF_BASE_URL}" yes "reachable"
 else
-  check "API at ${FIELDPROOF_BASE_URL}" no "not running (see docs/demo.md §3.1)"
+  check_optional "API at ${FIELDPROOF_BASE_URL}" no "not running yet (start it per docs/demo.md §3.1)"
 fi
 
 echo
@@ -110,6 +118,31 @@ if [ -f "$STARTER/docs/known-limitations.md" ]; then
   check "Known-limitations log" yes "$STARTER/docs/known-limitations.md"
 else
   check "Known-limitations log" no "missing"
+fi
+
+echo
+
+echo "-- demo artifacts (reviewer reproducibility) --"
+if [ -f "$STARTER/tests/fixtures/templates.json" ]; then
+  check "Synthetic template fixture" yes "$(basename "$STARTER/tests/fixtures/templates.json")"
+else
+  check "Synthetic template fixture" no "missing"
+fi
+if [ -f "$STARTER/scripts/seed_demo.py" ]; then
+  check "Demo seed script" yes "seed_demo.py"
+else
+  check "Demo seed script" no "missing"
+fi
+screenshots=$(ls "$STARTER/docs/screenshots"/*.png 2>/dev/null | wc -l | tr -d ' ')
+if [ "${screenshots:-0}" -ge 12 ]; then
+  check "Demo screenshots" yes "$screenshots PNG files"
+else
+  check "Demo screenshots" no "expected >=12, found ${screenshots:-0}"
+fi
+if [ -f "$STARTER/docs/screenshots/sample-report.pdf" ]; then
+  check "Sample report PDF" yes "$(basename "$STARTER/docs/screenshots/sample-report.pdf")"
+else
+  check "Sample report PDF" no "missing (regenerate: python3 scripts/seed_demo.py with the API running)"
 fi
 
 echo

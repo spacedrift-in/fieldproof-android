@@ -1,9 +1,12 @@
 package com.spacedrift.fieldproof.sync
 
+import com.spacedrift.fieldproof.data.local.ChecklistItemDao
 import com.spacedrift.fieldproof.data.local.EvidenceDao
 import com.spacedrift.fieldproof.data.local.EvidenceEntity
 import com.spacedrift.fieldproof.data.local.InspectionDao
 import com.spacedrift.fieldproof.data.local.SyncOperationEntity
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploadResult
+import com.spacedrift.fieldproof.data.remote.ChecklistOutcomeUploader
 import com.spacedrift.fieldproof.data.remote.EvidenceUploadResult
 import com.spacedrift.fieldproof.data.remote.EvidenceUploader
 import com.spacedrift.fieldproof.data.remote.InspectionUploadResult
@@ -21,8 +24,10 @@ class SyncRunner @Inject constructor(
     private val syncRepository: SyncRepository,
     private val inspectionDao: InspectionDao,
     private val evidenceDao: EvidenceDao,
+    private val checklistItemDao: ChecklistItemDao,
     private val inspectionUploader: InspectionUploader,
-    private val uploader: EvidenceUploader
+    private val uploader: EvidenceUploader,
+    private val checklistOutcomeUploader: ChecklistOutcomeUploader
 ) {
 
     private companion object {
@@ -32,6 +37,7 @@ class SyncRunner @Inject constructor(
         const val STATUS_SYNCED = "SYNCED"
         const val STATUS_FAILED = "FAILED"
         const val STATUS_CONFLICT = "CONFLICT"
+        const val STATUS_RESOLVED = "RESOLVED"
     }
 
     suspend fun run(): SyncRunResult {
@@ -65,12 +71,18 @@ class SyncRunner @Inject constructor(
 
     private suspend fun ensureInspectionOperations() {
         for (operation in syncRepository.getQueuedOperations()) {
-            if (operation.entityType != "EVIDENCE") {
-                continue
-            }
-            val evidence = evidenceDao.getEvidence(operation.entityId) ?: continue
-            if (syncRepository.getInspectionOperation(evidence.inspectionId) == null) {
-                syncRepository.queueInspection(evidence.inspectionId)
+            val inspectionId = when (operation.entityType) {
+                "EVIDENCE" ->
+                    evidenceDao.getEvidence(operation.entityId)?.inspectionId
+
+                "CHECKLIST" ->
+                    checklistItemDao.getChecklistItem(operation.entityId)?.inspectionId
+
+                else -> null
+            } ?: continue
+
+            if (syncRepository.getInspectionOperation(inspectionId) == null) {
+                syncRepository.queueInspection(inspectionId)
             }
         }
     }
@@ -81,6 +93,7 @@ class SyncRunner @Inject constructor(
         return when (operation.entityType to operation.operationType) {
             "INSPECTION" to "CREATE" -> dispatchInspection(operation)
             "EVIDENCE" to "CREATE" -> dispatchEvidence(operation)
+            "CHECKLIST" to "UPDATE" -> dispatchChecklistOutcome(operation)
             else -> {
                 syncRepository.markFailed(
                     operation = operation,
@@ -128,7 +141,7 @@ class SyncRunner @Inject constructor(
             is InspectionUploadResult.Conflict -> {
                 syncRepository.markConflict(
                     operation = attempted,
-                    error = "Inspection already exists on the server with different attributes."
+                    conflict = result.serverConflict
                 )
                 Outcome.Finished
             }
@@ -185,7 +198,7 @@ class SyncRunner @Inject constructor(
             return Outcome.Finished
         }
 
-        when (val gate = inspectionGate(evidence)) {
+        when (val gate = inspectionGate(evidence.inspectionId)) {
             is Gate.Blocked -> {
                 syncRepository.keepQueued(
                     operation = operation,
@@ -239,7 +252,7 @@ class SyncRunner @Inject constructor(
             is EvidenceUploadResult.Conflict -> {
                 syncRepository.markConflict(
                     operation = attempted,
-                    error = "Idempotency key was reused with different content."
+                    conflict = result.serverConflict
                 )
                 evidenceDao.updateSyncStatus(
                     evidenceId = evidence.id,
@@ -258,16 +271,116 @@ class SyncRunner @Inject constructor(
         }
     }
 
-    private suspend fun inspectionGate(evidence: EvidenceEntity): Gate {
+    private suspend fun dispatchChecklistOutcome(
+        operation: SyncOperationEntity
+    ): Outcome {
+        if (operation.attempts >= MAX_ATTEMPTS) {
+            syncRepository.markFailed(
+                operation = operation,
+                error = "Too many attempts; manual retry required."
+            )
+            checklistItemDao.updateSyncState(operation.entityId, STATUS_FAILED)
+            return Outcome.Finished
+        }
+
+        val item = checklistItemDao.getChecklistItem(operation.entityId)
+        if (item == null) {
+            syncRepository.markFailed(
+                operation = operation,
+                error = "Local checklist item no longer exists."
+            )
+            return Outcome.Finished
+        }
+
+        when (val gate = inspectionGate(item.inspectionId)) {
+            is Gate.Blocked -> {
+                syncRepository.keepQueued(operation = operation, error = gate.message)
+                checklistItemDao.updateSyncState(item.id, STATUS_QUEUED)
+                return Outcome.ShouldRetry
+            }
+
+            is Gate.Failed -> {
+                syncRepository.markFailed(operation = operation, error = gate.message)
+                checklistItemDao.updateSyncState(item.id, STATUS_FAILED)
+                return Outcome.Finished
+            }
+
+            Gate.Ready -> Unit
+        }
+
+        val attempted = operation.copy(attempts = operation.attempts + 1)
+        val revision = item.localRevision
+
+        // Compare-and-set claim before uploading. If a newer local edit replaced
+        // this queued operation (same deterministic id) while it waited, our
+        // revision is stale: skip it and let the newer operation upload instead.
+        if (!checklistItemDao.claimChecklistUpload(
+                operationId = operation.id,
+                revision = revision,
+                attempts = attempted.attempts,
+                now = System.currentTimeMillis()
+            )
+        ) {
+            return Outcome.ShouldRetry
+        }
+        checklistItemDao.updateSyncState(item.id, STATUS_UPLOADING)
+
+        return when (
+            val result = checklistOutcomeUploader.uploadChecklistOutcome(
+                item = item,
+                idempotencyKey = item.id
+            )
+        ) {
+            is ChecklistOutcomeUploadResult.Success -> {
+                // Acknowledge the exact revision we uploaded. If a newer edit
+                // landed mid-flight the CAS fails, leaving that edit queued for
+                // the next run instead of overwriting it with this result.
+                val acknowledged = checklistItemDao.acknowledgeSyncedOutcome(
+                    itemId = item.id,
+                    operationId = operation.id,
+                    revision = revision,
+                    syncedVersion = result.itemVersion,
+                    attempts = attempted.attempts,
+                    now = System.currentTimeMillis()
+                )
+                if (acknowledged) Outcome.Finished else Outcome.ShouldRetry
+            }
+
+            is ChecklistOutcomeUploadResult.Conflict -> {
+                syncRepository.markConflict(
+                    operation = attempted,
+                    conflict = result.serverConflict
+                )
+                checklistItemDao.updateSyncState(item.id, STATUS_CONFLICT)
+                Outcome.Finished
+            }
+
+            is ChecklistOutcomeUploadResult.Failed -> {
+                if (result.retryable && attempted.attempts < MAX_ATTEMPTS) {
+                    syncRepository.keepQueued(operation = attempted, error = result.message)
+                    checklistItemDao.updateSyncState(item.id, STATUS_QUEUED)
+                    Outcome.ShouldRetry
+                } else {
+                    syncRepository.markFailed(operation = attempted, error = result.message)
+                    checklistItemDao.updateSyncState(item.id, STATUS_FAILED)
+                    Outcome.Finished
+                }
+            }
+        }
+    }
+
+    private suspend fun inspectionGate(inspectionId: String): Gate {
         val inspectionOperation = syncRepository.getInspectionOperation(
-            inspectionId = evidence.inspectionId
+            inspectionId = inspectionId
         ) ?: run {
-            syncRepository.queueInspection(evidence.inspectionId)
+            syncRepository.queueInspection(inspectionId)
             return Gate.Blocked("Waiting for the inspection to sync.")
         }
 
         return when (inspectionOperation.status) {
-            STATUS_SYNCED -> Gate.Ready
+            // RESOLVED means the user explicitly accepted/kept the server's
+            // inspection after a conflict, so evidence may proceed.
+            STATUS_SYNCED, STATUS_RESOLVED -> Gate.Ready
 
             STATUS_FAILED, STATUS_CONFLICT -> Gate.Failed(
                 "The inspection has not synced; retry the inspection before its evidence."
