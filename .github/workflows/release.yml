@@ -116,7 +116,7 @@ jobs:
 
       - name: Upload test & lint reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-verify-reports
           path: |
@@ -184,7 +184,7 @@ jobs:
 
       - name: Upload security reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-security-reports
           path: app/build/reports/dependencies/
@@ -308,7 +308,7 @@ jobs:
             release-artifacts/*.apk
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fieldproof-release-${{ env.VERSION_NAME }}-${{ env.VERSION_CODE }}
           path: release-artifacts/
