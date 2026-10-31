@@ -60,7 +60,7 @@ docker compose up -d db
 python -m venv .venv
 .venv/bin/python -m pip install -r backend/requirements.txt
 
-# 3) Run the API (schema is created on startup)
+# 3) Run the local development API (development startup initializes the schema)
 export DATABASE_URL="postgresql+psycopg://fieldproof:fieldproof@localhost:5432/fieldproof"
 .venv/bin/uvicorn app.main:app --app-dir backend --reload
 ```
@@ -92,9 +92,10 @@ adb reverse tcp:8000 tcp:8000            # app's BASE_URL is http://127.0.0.1:80
 adb shell am start -n com.spacedrift.fieldproof/.MainActivity
 ```
 
-The app points at `http://127.0.0.1:8000/` by default
-(`app/src/main/java/com/spacedrift/fieldproof/di/NetworkModule.kt`); `adb
-reverse` maps that to the host API.
+The debug build defaults to `http://127.0.0.1:8000/` through
+`BuildConfig.API_BASE_URL`; `adb reverse` maps that to the host API. The URL can
+be overridden with `FIELD_PROOF_API_BASE_URL` or `fieldproof.apiBaseUrl`.
+Use synthetic data only and keep the unauthenticated API local.
 
 ---
 
